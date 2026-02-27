@@ -535,4 +535,3 @@ def patch_process_transformer_blocks(transformer):
         patched_process_transformer_blocks, transformer
     )
     print("[qlip] Patched _process_transformer_blocks: stack pe → [2,...] tensors")
-

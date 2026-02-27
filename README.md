@@ -29,7 +29,7 @@ git clone https://github.com/TheStageAI/ComfyUI-Qlip qlip_nodes
 Connect `Qlip Engines Loader` after your model loader:
 
 ```
-UNETLoader
+UNETLoader / CheckpointLoaderSimple
   -> Qlip Engines Loader (engines_path=./engines/..., with_lora=False)
     -> Guider -> Sampler -> VAEDecode -> SaveImage
 ```
@@ -42,7 +42,7 @@ Loads pre-compiled engines and replaces transformer blocks at runtime. Caches en
 
 | Input | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `model` | MODEL | Yes | | Model from UNETLoader |
+| `model` | MODEL | Yes | | Model from any loader (UNETLoader, CheckpointLoaderSimple, etc.) |
 | `with_lora` | BOOLEAN | Yes | | `True` if engines were compiled with `--lora` |
 | `engines_path` | STRING | No | `""` | Path to directory with `.engine` files |
 | `hf_repo` | STRING | No | `""` | HuggingFace repo with engines (alternative to local path) |
@@ -87,12 +87,44 @@ Enables or disables LoRA at runtime without reloading engines. Use after `Qlip E
 
 **Output:** `MODEL`
 
+### Qlip Timer Start
+
+Records a start timestamp. Accepts any data type and passes it through unchanged. Place **before** the node you want to measure.
+
+| Input | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `passthrough` | * | Yes | | Any data — passed through unchanged |
+| `timer_name` | STRING | Yes | `"timer_1"` | Name for this timer (must match Timer Stop) |
+
+**Output:** same data as `passthrough`
+
+### Qlip Timer Stop
+
+Records elapsed time since the matching Timer Start and displays it. Place **after** the node you want to measure.
+
+| Input | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `passthrough` | * | Yes | | Any data — passed through unchanged |
+| `timer_name` | STRING | Yes | `"timer_1"` | Name for this timer (must match Timer Start) |
+
+**Output:** same data as `passthrough`. Elapsed time is shown in the node UI and printed to console.
+
+### Qlip Timer Report
+
+Displays a summary table of all timer measurements. Connect the `trigger` input to any node output that executes after all Timer Stop nodes.
+
+| Input | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `trigger` | * | No | | Connect any output to ensure execution order |
+
+**Output:** none (display only). Results are shown in the node UI and printed to console.
+
 ## Workflows
 
 ### Basic (no LoRA)
 
 ```
-UNETLoader (model.safetensors)
+UNETLoader / CheckpointLoaderSimple (model.safetensors)
   -> Qlip Engines Loader (engines_path=..., with_lora=False)
     -> BasicGuider / CFGGuider
       -> SamplerCustomAdvanced
@@ -102,12 +134,12 @@ UNETLoader (model.safetensors)
 ### With LoRA
 
 ```
-Qlip LoRA Config (lora_config.json)  ──────────────────────────────┐
-                                                                    │
-Qlip LoRA Stack (lora.safetensors, strength=1.0)  ───────────────┐ │
-                                                                  │ │
-UNETLoader (model.safetensors)                                    │ │
-  -> Qlip Engines Loader (with_lora=True, lora_stack=↑, config=↑)
+Qlip LoRA Config (lora_config.json)  ──────────────────────────────────────┐
+                                                                            │
+Qlip LoRA Stack (lora.safetensors, strength=1.0)  ───────────────────────┐ │
+                                                                          │ │
+UNETLoader / CheckpointLoaderSimple (model.safetensors)                   │ │
+  -> Qlip Engines Loader (with_lora=True, lora_stack=↑, lora_config=↑)
     -> BasicGuider / CFGGuider
       -> SamplerCustomAdvanced
         -> VAEDecode -> SaveImage
@@ -122,6 +154,35 @@ Qlip LoRA Stack (style_lora.safetensors, 0.8)
 ```
 
 Multiple LoRAs are stacked — their ranks concatenate. Total rank must fit within `--max-lora-rank` used at compilation time.
+
+### Profiling a single node
+
+```
+... -> [Qlip Timer Start "sampler"] -> SamplerCustomAdvanced -> [Qlip Timer Stop "sampler"] -> ...
+```
+
+Timer Stop displays: `sampler: 2317.9 ms (2.318 s)`
+
+### Profiling multiple sections
+
+```
+-> [Timer Start "sampler"] -> Sampler -> [Timer Stop "sampler"]
+  -> [Timer Start "vae"] -> VAEDecode -> [Timer Stop "vae"] -> SaveImage
+                                               |
+                                         [Timer Report]
+```
+
+Timer Report displays:
+```
+=== Qlip Timer Report ===
+  sampler: 2317.9 ms
+  vae: 890.1 ms
+  --------
+  Total: 3208.0 ms (3.208 s)
+=========================
+```
+
+Results auto-reset between workflow runs.
 
 ## Requirements
 
@@ -138,7 +199,7 @@ LoRA weights are **runtime inputs** to compiled engines, not baked into weights.
 **Caching behavior:**
 - Engines loaded once per path, reused across runs
 - LoRA weights hot-swapped in-place when stack changes
-- Same LoRA between runs — no work at all
+- Same LoRA between runs — weights already loaded, swap skipped
 - LoRA removed — packed tensors zeroed, no engine reload
 
 **Constraints:**
