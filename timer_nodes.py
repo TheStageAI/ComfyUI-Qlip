@@ -1,6 +1,8 @@
 import time
 import threading
 
+import torch
+
 
 # ---------------------------------------------------------------------------
 # ANY type passthrough (SmartType pattern from ComfyUI)
@@ -29,6 +31,7 @@ class _TimerStore:
     _timers: dict[str, float] = {}          # name -> start perf_counter
     _results: list[tuple[str, float]] = []  # ordered (name, elapsed_s)
     _collected = False                       # True after report() reads results
+    _cold_starts: dict[str, float] = {}     # name -> first elapsed (persistent)
 
     @classmethod
     def start(cls, name: str):
@@ -50,6 +53,9 @@ class _TimerStore:
                 return None
             elapsed = now - start
             cls._results.append((name, elapsed))
+            # Record cold start (first ever measurement for this name)
+            if name not in cls._cold_starts:
+                cls._cold_starts[name] = elapsed
             return elapsed
 
     @classmethod
@@ -57,6 +63,12 @@ class _TimerStore:
         with cls._lock:
             cls._collected = True  # mark as collected → next start() will reset
             return list(cls._results)
+
+    @classmethod
+    def get_cold_start(cls, name: str) -> float | None:
+        with cls._lock:
+            return cls._cold_starts.get(name)
+
 
 
 # ---------------------------------------------------------------------------
@@ -78,6 +90,12 @@ class QlipTimerStart:
                     "tooltip": "Name for this timer (must match QlipTimerStop)",
                 }),
             },
+            "optional": {
+                "cuda_sync": ("BOOLEAN", {
+                    "default": True,
+                    "tooltip": "Call torch.cuda.synchronize() for accurate GPU timing",
+                }),
+            },
         }
 
     RETURN_TYPES = (ANY_TYPE,)
@@ -93,7 +111,9 @@ class QlipTimerStart:
     def VALIDATE_INPUTS(cls, **kwargs):
         return True
 
-    def start_timer(self, passthrough, timer_name="timer_1"):
+    def start_timer(self, passthrough, timer_name="timer_1", cuda_sync=True):
+        if cuda_sync and torch.cuda.is_available():
+            torch.cuda.synchronize()
         _TimerStore.start(timer_name)
         print(f"[qlip timer] '{timer_name}' started")
         return (passthrough,)
@@ -118,6 +138,12 @@ class QlipTimerStop:
                     "tooltip": "Name for this timer (must match QlipTimerStart)",
                 }),
             },
+            "optional": {
+                "cuda_sync": ("BOOLEAN", {
+                    "default": True,
+                    "tooltip": "Call torch.cuda.synchronize() for accurate GPU timing",
+                }),
+            },
         }
 
     RETURN_TYPES = (ANY_TYPE,)
@@ -134,11 +160,13 @@ class QlipTimerStop:
     def VALIDATE_INPUTS(cls, **kwargs):
         return True
 
-    def stop_timer(self, passthrough, timer_name="timer_1"):
+    def stop_timer(self, passthrough, timer_name="timer_1", cuda_sync=True):
+        if cuda_sync and torch.cuda.is_available():
+            torch.cuda.synchronize()
         elapsed = _TimerStore.stop(timer_name)
         if elapsed is not None:
             ms = elapsed * 1000
-            text = f"{timer_name}: {ms:.1f} ms ({elapsed:.3f} s)"
+            text = f"{timer_name}: {elapsed:.3f} s ({ms:.1f} ms)"
         else:
             text = f"{timer_name}: no matching QlipTimerStart"
 
@@ -165,6 +193,10 @@ class QlipTimerReport:
                 "trigger": (ANY_TYPE, {
                     "tooltip": "Connect any output to ensure execution order",
                 }),
+                "track_cold_start": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "Show cold start (first run) comparison in report",
+                }),
             },
         }
 
@@ -181,7 +213,7 @@ class QlipTimerReport:
     def VALIDATE_INPUTS(cls, **kwargs):
         return True
 
-    def report(self, trigger=None):
+    def report(self, trigger=None, track_cold_start=False):
         results = _TimerStore.get_results()
 
         if not results:
@@ -191,12 +223,47 @@ class QlipTimerReport:
 
         lines = ["=== Qlip Timer Report ==="]
         total = 0.0
+        cold_total = 0.0
+        has_cold = False
+
         for name, elapsed in results:
             ms = elapsed * 1000
             total += elapsed
-            lines.append(f"  {name}: {ms:.1f} ms")
+
+            if track_cold_start:
+                cold = _TimerStore.get_cold_start(name)
+                if cold is not None:
+                    cold_ms = cold * 1000
+                    cold_total += cold
+                    has_cold = True
+                    if abs(cold - elapsed) < 1e-6:
+                        lines.append(f"  {name}: {elapsed:.3f} s ({ms:.1f} ms)  (cold start)")
+                    else:
+                        delta_pct = ((elapsed - cold) / cold) * 100
+                        lines.append(
+                            f"  {name}: {elapsed:.3f} s ({ms:.1f} ms)  "
+                            f"(cold: {cold:.3f} s, {delta_pct:+.1f}%)"
+                        )
+                else:
+                    lines.append(f"  {name}: {elapsed:.3f} s ({ms:.1f} ms)")
+            else:
+                lines.append(f"  {name}: {elapsed:.3f} s ({ms:.1f} ms)")
+
         lines.append(f"  --------")
-        lines.append(f"  Total: {total * 1000:.1f} ms ({total:.3f} s)")
+        total_ms = total * 1000
+        if track_cold_start and has_cold:
+            if abs(cold_total - total) < 1e-6:
+                lines.append(
+                    f"  Total: {total:.3f} s ({total_ms:.1f} ms)  (cold start)"
+                )
+            else:
+                delta_pct = ((total - cold_total) / cold_total) * 100
+                lines.append(
+                    f"  Total: {total:.3f} s ({total_ms:.1f} ms)  "
+                    f"(cold: {cold_total:.3f} s, {delta_pct:+.1f}%)"
+                )
+        else:
+            lines.append(f"  Total: {total:.3f} s ({total_ms:.1f} ms)")
         lines.append("=========================")
 
         text = "\n".join(lines)
