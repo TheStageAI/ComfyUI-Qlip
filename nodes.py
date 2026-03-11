@@ -6,7 +6,7 @@ import torch
 from .utils import (
     find_engines_dir, has_engine_files, _add_qlip_to_path,
     _infer_lora_config_from_model, _discover_block_groups,
-    load_lora_config_json, is_ltxav_model,
+    load_lora_config_json
 )
 
 logger = logging.getLogger("qlip_nodes")
@@ -420,16 +420,6 @@ class QlipEnginesLoader:
         # Must match the signature the TRT engine was compiled with.
         # LTXAV: compile_ltx_2.py patch_blocks_pe_to_stacked creates explicit
         # forward with these kwargs (no transformer_options — qlip strips it).
-        lora_input_names = None
-        if is_ltxav_model(dm):
-            lora_input_names = [
-                "x", "v_context", "a_context", "attention_mask",
-                "v_timestep", "a_timestep",
-                "v_pe", "a_pe", "v_cross_pe", "a_cross_pe",
-                "v_cross_scale_shift_timestep", "a_cross_scale_shift_timestep",
-                "v_cross_gate_timestep", "a_cross_gate_timestep",
-            ]
-
         # --- Setup each block group (model-agnostic) ---
         lora_groups = []
         for config in configs:
@@ -444,15 +434,13 @@ class QlipEnginesLoader:
                 dm, config.block_prefix, config,
                 lora_stack if has_real_lora else None,
                 max_rank,
-                input_names=lora_input_names,
             )
             lora_groups.append(group)
 
         return lora_groups
 
-    def _setup_block_group(self, dm, block_attr, config, lora_stack, max_rank,
-                           input_names=None):
-        """Setup one block group: patch signatures + pack tensors.
+    def _setup_block_group(self, dm, block_attr, config, lora_stack, max_rank):
+        """Setup one block group: pack tensors for LoRA.
 
         Args:
             dm: diffusion model
@@ -460,15 +448,13 @@ class QlipEnginesLoader:
             config: LoRAConfig for this group
             lora_stack: list of {"path", "strength"} or None (zero mode)
             max_rank: max LoRA rank
-            input_names: explicit input names for patch_block_for_lora.
-                If None, auto-detected from block.forward() signature.
+            input_names: unused (kept for backward compatibility).
 
         Returns:
             (packed_tensors, LoRABlockGroup)
         """
         from elastic_models.diffusers.lora import (
             LoRAManager, LoRABlockGroup, create_zero_lora_packed,
-            patch_block_for_lora,
         )
 
         blocks = getattr(dm, block_attr)
@@ -501,10 +487,6 @@ class QlipEnginesLoader:
             packed = [dummy for _ in range(num_blocks)]
             print(f"[qlip] {block_attr}: {num_blocks} blocks, "
                   f"zero lora_packed (rank={max_rank})")
-
-        # Patch block forward signatures BEFORE engine loading
-        for block in blocks:
-            patch_block_for_lora(block, input_names=input_names)
 
         group = LoRABlockGroup(
             manager=manager,
