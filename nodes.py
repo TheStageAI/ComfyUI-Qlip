@@ -230,10 +230,10 @@ class QlipEnginesLoader:
 
             self._last_lora_key[cache_key] = lora_key
 
-            # Wrapper is already installed from first load — closures capture
-            # packed_list by reference, so swap_lora/disable_lora changes
-            # propagate automatically. Do NOT call setup_lora_wrapper again
-            # (it would double-wrap, prepending lora_packed twice).
+            # QlipLoraModule is already wrapping blocks from first load —
+            # closures capture packed_list by reference, so swap_lora/disable_lora
+            # changes propagate automatically. Do NOT call QlipLoraModule.setup
+            # again (it would double-wrap, prepending lora_packed twice).
             dm._qlip_lora_groups = groups
             print(f"[qlip] Using cached engines from {engines_dir}")
             return (patched_model,)
@@ -279,11 +279,12 @@ class QlipEnginesLoader:
 
         # LoRA wrapper (AFTER engine loading — wraps CompiledModules)
         if with_lora:
-            from elastic_models.diffusers.lora import setup_lora_wrapper
+            from elastic_models.diffusers.lora import QlipLoraModule
 
             for group in lora_groups:
-                blocks = getattr(dm, group.block_prefix)
-                setup_lora_wrapper(list(blocks), group.packed)
+                QlipLoraModule.setup(
+                    dm, group.block_prefix, group.config, group.packed,
+                )
                 print(f"[qlip] LoRA wrapper: "
                       f"{group.num_blocks} {group.block_prefix}")
 
@@ -372,9 +373,11 @@ class QlipEnginesLoader:
     # ------------------------------------------------------------------
 
     def _setup_lora(self, dm, lora_stack, lora_config, max_rank):
-        """Setup LoRA: patch signatures, load/pack weights or create zeros.
+        """Resolve LoRA configs and pack weights into LoRABlockGroups.
 
-        Must be called BEFORE engine loading (auto_setup reads signatures).
+        Called BEFORE engine loading to prepare packed tensors.
+        QlipLoraModule.setup() is called separately AFTER engine loading
+        to wrap CompiledModule blocks.
 
         Config priority:
         1. Explicit lora_config (from QlipLoraConfig node) — exact match
@@ -430,7 +433,7 @@ class QlipEnginesLoader:
                     config.block_prefix,
                 )
                 continue
-            _, group = self._setup_block_group(
+            group = self._setup_block_group(
                 dm, config.block_prefix, config,
                 lora_stack if has_real_lora else None,
                 max_rank,
@@ -496,7 +499,7 @@ class QlipEnginesLoader:
             packed=packed,
         )
 
-        return packed, group
+        return group
 
     # ------------------------------------------------------------------
     # Internal: model-specific patches
