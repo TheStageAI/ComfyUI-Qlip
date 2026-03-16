@@ -419,8 +419,6 @@ class QlipEnginesLoader:
             print("[qlip] WARNING: LoRA config inferred from model structure "
                   "— use QlipLoraConfig node for exact match")
 
-        # --- Determine input_names for patch_block_for_lora ---
-        # Must match the signature the TRT engine was compiled with.
         # LTXAV: compile_ltx_2.py patch_blocks_pe_to_stacked creates explicit
         # forward with these kwargs (no transformer_options — qlip strips it).
         # --- Setup each block group (model-agnostic) ---
