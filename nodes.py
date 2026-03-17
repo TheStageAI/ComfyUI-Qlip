@@ -145,11 +145,11 @@ class QlipEnginesLoader:
             "optional": {
                 "engines_path": ("STRING", {
                     "default": "",
-                    "tooltip": "Absolute path to directory with .engine files",
+                    "tooltip": "Absolute path to directory with .qlip/.engine files",
                 }),
                 "hf_repo": ("STRING", {
                     "default": "",
-                    "tooltip": "HuggingFace repo with compiled engines",
+                    "tooltip": "HuggingFace repo with engines, e.g. TheStageAI/Elastic-FLUX-2-Klein:models/H100/klein-4b-fp8_lora",
                 }),
                 "lora_stack": ("QLIP_LORA_STACK", {
                     "tooltip": "LoRA stack from QlipLoraStack node(s)",
@@ -192,8 +192,8 @@ class QlipEnginesLoader:
 
         if not has_engine_files(engines_dir):
             raise FileNotFoundError(
-                f"No .engine files found in {engines_dir}. "
-                f"Run compile_flux_krea.py first to compile engines."
+                f"No .qlip/.engine files found in {engines_dir}. "
+                f"Compile engines first or download precompiled ones."
             )
 
         # Clone the model patcher

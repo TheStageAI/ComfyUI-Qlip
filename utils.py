@@ -40,34 +40,71 @@ def find_engines_dir(engines_path: str = "", hf_repo: str = "") -> Path:
     )
 
 
-def download_engines_from_hf(repo_id: str, local_dir: Optional[str] = None) -> Path:
+def download_engines_from_hf(hf_repo: str, local_dir: Optional[str] = None) -> Path:
     """
-    Download compiled TRT engines from a HuggingFace repository.
+    Download compiled engines from a HuggingFace repository.
 
-    Only downloads .engine, .qlip, and config.json files.
+    Downloads .engine, .qlip, .bin (encryption key), and .json files.
     Uses huggingface_hub cache by default.
 
+    hf_repo can be:
+      - "TheStageAI/Elastic-FLUX-2-Klein" — downloads all, finds engines automatically
+      - "TheStageAI/Elastic-FLUX-2-Klein:models/H100/klein-4b-fp8_lora" — downloads
+        only engines from the specified subdirectory
+
     Args:
-        repo_id: HuggingFace repository id (e.g. "user/flux-klein-trt-engines")
+        hf_repo: HuggingFace repo id, optionally with :subpath suffix
         local_dir: Optional local directory to save files
 
     Returns:
-        Path to downloaded engines directory
+        Path to directory containing engine files
     """
     from huggingface_hub import snapshot_download
 
-    path = snapshot_download(
+    # Parse optional subpath: "org/repo:subpath"
+    if ":" in hf_repo:
+        repo_id, subpath = hf_repo.rsplit(":", 1)
+        subpath = subpath.strip("/")
+        allow_patterns = [f"{subpath}/*"]
+    else:
+        repo_id = hf_repo
+        subpath = None
+        allow_patterns = ["*.engine", "*.qlip", "*.bin", "*.json"]
+
+    path = Path(snapshot_download(
         repo_id,
         local_dir=local_dir,
-        allow_patterns=["*.engine", "*.qlip", "config.json"],
-    )
-    return Path(path)
+        allow_patterns=allow_patterns,
+    ))
+
+    # If subpath was specified, return it directly
+    if subpath:
+        engines_path = path / subpath
+        if engines_path.is_dir():
+            return engines_path
+
+    # Otherwise find the deepest directory with engine files
+    if not _has_engine_files_flat(path):
+        for engine_file in path.rglob("*.qlip"):
+            return engine_file.parent
+        for engine_file in path.rglob("*.engine"):
+            return engine_file.parent
+
+    return path
 
 
 def has_engine_files(engines_dir: Path) -> bool:
-    """Check if directory contains any .engine or .qlip files."""
+    """Check if directory contains .engine or .qlip files (recursively)."""
     if not engines_dir.is_dir():
         return False
+    for ext in ("*.engine", "*.qlip"):
+        if list(engines_dir.rglob(ext)):
+            return True
+    return False
+
+
+def _has_engine_files_flat(engines_dir: Path) -> bool:
+    """Check if directory contains .engine or .qlip files (non-recursive)."""
     for ext in ("*.engine", "*.qlip"):
         if list(engines_dir.glob(ext)):
             return True
