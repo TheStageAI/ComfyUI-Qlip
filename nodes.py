@@ -11,6 +11,8 @@ from .utils import (
 
 logger = logging.getLogger("qlip_nodes")
 
+MAX_LORA_RANK = 256
+
 
 class QlipLoraStack:
     """
@@ -62,85 +64,32 @@ class QlipLoraStack:
         return (stack,)
 
 
-class QlipLoraConfig:
-    """
-    Load LoRA config from a JSON file.
-
-    The JSON file should match the config used at compilation time.
-    It is saved automatically by compile_flux_krea.py as lora_config.json
-    in the engines directory.
-
-    If not connected, the config will be inferred from the LoRA file
-    or model structure (with a warning).
-    """
-
-    @classmethod
-    def INPUT_TYPES(s):
-        return {
-            "required": {},
-            "optional": {
-                "config_path": ("STRING", {
-                    "default": "",
-                    "tooltip": "Path to lora_config.json (saved during compilation)",
-                }),
-            },
-        }
-
-    RETURN_TYPES = ("QLIP_LORA_CONFIG",)
-    RETURN_NAMES = ("lora_config",)
-    FUNCTION = "load_config"
-    CATEGORY = "qlip"
-
-    def load_config(self, config_path=""):
-        if not config_path:
-            return (None,)
-
-        resolved = Path(config_path).resolve()
-        if not resolved.exists():
-            raise FileNotFoundError(f"LoRA config file not found: {resolved}")
-
-        configs = load_lora_config_json(str(resolved))
-        print(f"[qlip] Loaded LoRA config from {resolved.name}: "
-              f"{len(configs)} block group(s)")
-        return (configs,)
-
-
 class QlipEnginesLoader:
     """
     Load pre-compiled TRT engines and replace transformer blocks
     with CompiledModule instances.
 
+    LoRA support is auto-detected:
+    - If lora_config.json exists in the engines directory → LoRA-enabled engines
+    - If lora_stack is connected → LoRA is needed (config from json or inferred)
+    - Otherwise → no LoRA
+
     Caches engines and LoRA state across invocations:
     - Engines are loaded once and reused (keyed by engines_dir).
     - LoRA weights are hot-swapped via swap_lora when lora_stack changes.
     - If lora_stack is unchanged between runs, no work is done.
-
-    When with_lora=True (engines compiled with --lora):
-    - First run: full setup (patch signatures, pack weights, load engines,
-      setup wrapper)
-    - Subsequent runs: swap_lora (if LoRA changed) or skip (if same)
-    - If lora_stack is empty: injects zero lora_packed tensors
-    - If lora_config is connected: uses exact config from compilation
-    - If lora_config is not connected: infers config (with WARNING)
-
-    When with_lora=False:
-    - Loads engines without any LoRA patching
     """
 
     _engines_cache = {}      # str(engines_dir) → (imanager, memory_manager)
     _lora_groups_cache = {}  # str(engines_dir) → list[LoRABlockGroup]
     _last_lora_key = {}      # str(engines_dir) → tuple (hash of lora_stack)
+    _lora_supported = {}     # str(engines_dir) → bool (engines have LoRA support)
 
     @classmethod
     def INPUT_TYPES(s):
         return {
             "required": {
                 "model": ("MODEL",),
-                "with_lora": ("BOOLEAN", {
-                    "default": False,
-                    "tooltip": "Were engines compiled with --lora? "
-                               "If True, blocks expect lora_packed input",
-                }),
             },
             "optional": {
                 "engines_path": ("STRING", {
@@ -149,20 +98,17 @@ class QlipEnginesLoader:
                 }),
                 "hf_repo": ("STRING", {
                     "default": "",
-                    "tooltip": "HuggingFace repo with engines, e.g. TheStageAI/Elastic-FLUX-2-Klein:models/H100/klein-4b-fp8_lora",
+                    "tooltip": "HuggingFace repo with engines, e.g. "
+                               "TheStageAI/Elastic-FLUX-2-Klein:models/H100/klein-9b-fp8_lora",
                 }),
                 "lora_stack": ("QLIP_LORA_STACK", {
                     "tooltip": "LoRA stack from QlipLoraStack node(s)",
                 }),
-                "lora_config": ("QLIP_LORA_CONFIG", {
-                    "tooltip": "LoRA config from QlipLoraConfig node "
-                               "(recommended — ensures match with compilation)",
-                }),
-                "max_rank": ("INT", {
-                    "default": 128,
-                    "min": 1,
-                    "max": 512,
-                    "tooltip": "Maximum LoRA rank (must match compilation --max-lora-rank)",
+                "cuda_graph": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "Enable CUDA Graph capture for TRT engines. "
+                               "Reduces kernel launch overhead for faster inference. "
+                               "First run captures the graph, subsequent runs replay it.",
                 }),
             },
         }
@@ -176,9 +122,8 @@ class QlipEnginesLoader:
     # Main entry point
     # ------------------------------------------------------------------
 
-    def load_engines(self, model, with_lora=False, engines_path="",
-                     hf_repo="", lora_stack=None, lora_config=None,
-                     max_rank=128):
+    def load_engines(self, model, engines_path="",
+                     hf_repo="", lora_stack=None, cuda_graph=False):
         if not engines_path and not hf_repo:
             print("[qlip] No engines_path or hf_repo specified, "
                   "passing model through unchanged")
@@ -195,6 +140,19 @@ class QlipEnginesLoader:
                 f"No .qlip/.engine files found in {engines_dir}. "
                 f"Compile engines first or download precompiled ones."
             )
+
+        # Auto-detect LoRA support from lora_config.json or lora_stack
+        lora_config_path = Path(engines_dir) / "lora_config.json"
+        has_lora_config = lora_config_path.is_file()
+        has_lora_stack = lora_stack and len(lora_stack) > 0
+        with_lora = has_lora_config or has_lora_stack
+
+        # Load lora_config.json if present
+        lora_config = None
+        if has_lora_config:
+            lora_config = load_lora_config_json(str(lora_config_path))
+            print(f"[qlip] Loaded lora_config.json: "
+                  f"{len(lora_config)} block group(s)")
 
         # Clone the model patcher
         patched_model = model.clone()
@@ -220,20 +178,15 @@ class QlipEnginesLoader:
                 # Same LoRA — nothing to do
                 print("[qlip] LoRA unchanged, skipping swap")
             elif lora_key is None:
-                # LoRA removed — zero out
-                from elastic_models.diffusers.lora import disable_lora
-                disable_lora(groups)
-                print("[qlip] LoRA disabled (zeroed)")
+                # LoRA removed — rank-1 zero for minimal overhead
+                self._disable_lora(groups)
+                print("[qlip] LoRA disabled (rank=1)")
             else:
                 # Different LoRA — hot-swap
-                self._swap_lora_stack(groups, lora_stack, max_rank)
+                self._swap_lora_stack(groups, lora_stack, MAX_LORA_RANK)
 
             self._last_lora_key[cache_key] = lora_key
 
-            # QlipLoraModule is already wrapping blocks from first load —
-            # closures capture packed_list by reference, so swap_lora/disable_lora
-            # changes propagate automatically. Do NOT call QlipLoraModule.setup
-            # again (it would double-wrap, prepending lora_packed twice).
             dm._qlip_lora_groups = groups
             print(f"[qlip] Using cached engines from {engines_dir}")
             return (patched_model,)
@@ -246,7 +199,7 @@ class QlipEnginesLoader:
         lora_groups = []
         if with_lora:
             lora_groups = self._setup_lora(
-                dm, lora_stack, lora_config, max_rank
+                dm, lora_stack, lora_config, MAX_LORA_RANK
             )
 
         # Load TRT engines
@@ -266,6 +219,7 @@ class QlipEnginesLoader:
                 mm.add_infsession(mod.session)
 
             self._engines_cache[cache_key] = (imanager, mm)
+            self._lora_supported[cache_key] = with_lora
             print(f"[qlip] Loaded {len(imanager.modules)} engine modules")
         else:
             imanager, mm = self._engines_cache[cache_key]
@@ -300,11 +254,29 @@ class QlipEnginesLoader:
         mm.allocate_memory()
         print("[qlip] Device memory allocated")
 
+        # Enable CUDA Graph on TRT sessions
+        if cuda_graph:
+            self._enable_cuda_graph(imanager)
+
         return (patched_model,)
 
     # ------------------------------------------------------------------
     # LoRA cache key
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _disable_lora(groups):
+        """Disable LoRA by replacing packed tensors with rank-1 zero tensors.
+
+        Uses rank=1 so TRT selects the smallest optimization profile,
+        minimizing LoRA MatMul overhead when LoRA is not active.
+        """
+        for g in groups:
+            for i, packed in enumerate(g.packed):
+                g.packed[i] = torch.zeros(
+                    packed.shape[0], 1, packed.shape[2], packed.shape[3],
+                    device=packed.device, dtype=packed.dtype,
+                )
 
     @staticmethod
     def _compute_lora_key(lora_stack):
@@ -322,12 +294,7 @@ class QlipEnginesLoader:
 
     @staticmethod
     def _swap_lora_stack(groups, lora_stack, max_rank):
-        """Hot-swap LoRA weights from a multi-file lora_stack.
-
-        Can be replaced with:
-            from elastic_models.diffusers.lora import swap_lora
-            swap_lora(groups, lora_stack=lora_stack, max_rank_limit=max_rank)
-        """
+        """Hot-swap LoRA weights from a multi-file lora_stack. (use elastic_models.swap_lora in the future)"""
         # Clear old weights
         for g in groups:
             g.manager.clear_weights()
@@ -345,7 +312,7 @@ class QlipEnginesLoader:
 
         # Compute uniform rank across all groups
         used_rank = max(
-            g.manager.compute_total_rank(min_rank=32, max_rank=max_rank)
+            g.manager.compute_total_rank(min_rank=1, max_rank=max_rank)
             for g in groups
         )
 
@@ -380,9 +347,9 @@ class QlipEnginesLoader:
         to wrap CompiledModule blocks.
 
         Config priority:
-        1. Explicit lora_config (from QlipLoraConfig node) — exact match
-        2. Infer from LoRA file (WARNING)
-        3. Infer from model structure (WARNING)
+        1. lora_config.json from engines directory — exact match
+        2. Infer from LoRA file
+        3. Infer from model structure
 
         Returns:
             list[LoRABlockGroup]
@@ -391,21 +358,18 @@ class QlipEnginesLoader:
 
         has_real_lora = lora_stack and len(lora_stack) > 0
 
-        # --- Resolve configs (model-agnostic) ---
+        # --- Resolve configs ---
         if lora_config is not None:
             configs = lora_config
-            print("[qlip] Using explicit LoRA config from QlipLoraConfig node")
         elif has_real_lora:
             first_path = lora_stack[0]["path"]
             configs = LoRAManager.infer_config(first_path)
             logger.warning(
-                "LoRA config inferred from %s — may not match compilation config. "
-                "Use QlipLoraConfig node for exact match.",
+                "No lora_config.json in engines dir — config inferred from %s",
                 Path(first_path).name,
             )
-            print(f"[qlip] WARNING: LoRA config inferred from "
-                  f"{Path(first_path).name} "
-                  "— use QlipLoraConfig node for exact match")
+            print(f"[qlip] WARNING: lora_config.json not found in engines dir, "
+                  f"config inferred from {Path(first_path).name}")
         else:
             configs = []
             for attr, prefix in _discover_block_groups(dm):
@@ -413,15 +377,12 @@ class QlipEnginesLoader:
                 if cfg:
                     configs.append(cfg)
             logger.warning(
-                "LoRA config inferred from model structure — may not match "
-                "compilation config. Use QlipLoraConfig node for exact match."
+                "No lora_config.json — config inferred from model structure"
             )
-            print("[qlip] WARNING: LoRA config inferred from model structure "
-                  "— use QlipLoraConfig node for exact match")
+            print("[qlip] WARNING: lora_config.json not found, "
+                  "config inferred from model structure")
 
-        # LTXAV: compile_ltx_2.py patch_blocks_pe_to_stacked creates explicit
-        # forward with these kwargs (no transformer_options — qlip strips it).
-        # --- Setup each block group (model-agnostic) ---
+        # --- Setup each block group ---
         lora_groups = []
         for config in configs:
             blocks = getattr(dm, config.block_prefix, None)
@@ -441,19 +402,7 @@ class QlipEnginesLoader:
         return lora_groups
 
     def _setup_block_group(self, dm, block_attr, config, lora_stack, max_rank):
-        """Setup one block group: pack tensors for LoRA.
-
-        Args:
-            dm: diffusion model
-            block_attr: attribute name for blocks (e.g. config.block_prefix)
-            config: LoRAConfig for this group
-            lora_stack: list of {"path", "strength"} or None (zero mode)
-            max_rank: max LoRA rank
-            input_names: unused (kept for backward compatibility).
-
-        Returns:
-            (packed_tensors, LoRABlockGroup)
-        """
+        """Setup one block group: pack tensors for LoRA."""
         from elastic_models.diffusers.lora import (
             LoRAManager, LoRABlockGroup, create_zero_lora_packed,
         )
@@ -471,7 +420,7 @@ class QlipEnginesLoader:
                       f"({count} layers, strength={entry['strength']})")
 
             used_rank = manager.compute_total_rank(
-                min_rank=32, max_rank=max_rank
+                min_rank=1, max_rank=max_rank
             )
             packed = []
             for i in range(num_blocks):
@@ -527,19 +476,37 @@ class QlipEnginesLoader:
             patch_compressed_timestep(dm)
             patch_process_transformer_blocks(dm)
 
+    @staticmethod
+    def _enable_cuda_graph(imanager):
+        """Enable CUDA Graph capture on all TRT sessions.
+
+        Must be called AFTER memory allocation — sessions need
+        pre-allocated tensors (store_tensors=True) for graph capture.
+        """
+        import importlib
+        cudart = importlib.import_module("cuda.bindings.runtime")
+
+        count = 0
+        for mod in imanager.modules:
+            session = mod.session
+            session.config.use_cuda_graph = True
+            session.config.store_tensors = True
+            count += 1
+        print(f"[qlip] CUDA Graph enabled on {count} engine sessions")
+
 
 class QlipLoraSwitch:
     """
     Enable or disable LoRA on a model with pre-loaded TRT engines.
 
-    Must be used AFTER QlipEnginesLoader with with_lora=True.
+    Must be used AFTER QlipEnginesLoader with LoRA-enabled engines.
     Mutates LoRA packed tensors in-place — the wrapper sees changes
     automatically (no re-wrapping needed).
 
     Usage:
     - enable=True + lora_stack connected: swap_lora (load weights)
     - enable=True + lora_stack not connected: keep current state
-    - enable=False: disable_lora (zero out packed tensors)
+    - enable=False: disable_lora (replace with rank-1 zero tensors for minimal overhead)
     """
 
     @classmethod
@@ -556,12 +523,6 @@ class QlipLoraSwitch:
                 "lora_stack": ("QLIP_LORA_STACK", {
                     "tooltip": "LoRA stack to load (only used when enable=True)",
                 }),
-                "max_rank": ("INT", {
-                    "default": 128,
-                    "min": 1,
-                    "max": 512,
-                    "tooltip": "Max LoRA rank (must match compilation)",
-                }),
             },
         }
 
@@ -570,7 +531,7 @@ class QlipLoraSwitch:
     FUNCTION = "switch_lora"
     CATEGORY = "qlip"
 
-    def switch_lora(self, model, enable=True, lora_stack=None, max_rank=128):
+    def switch_lora(self, model, enable=True, lora_stack=None):
         patched_model = model.clone()
         dm = patched_model.model.diffusion_model
 
@@ -578,15 +539,16 @@ class QlipLoraSwitch:
         if groups is None:
             raise RuntimeError(
                 "No LoRA groups found on model. "
-                "Use QlipEnginesLoader with with_lora=True first."
+                "Use LoRA-enabled engines (with lora_config.json) first."
             )
 
         if not enable:
-            from elastic_models.diffusers.lora import disable_lora
-            disable_lora(groups)
-            print("[qlip] QlipLoraSwitch: LoRA disabled (zeroed)")
+            QlipEnginesLoader._disable_lora(groups)
+            print("[qlip] QlipLoraSwitch: LoRA disabled (rank=1)")
         elif lora_stack and len(lora_stack) > 0:
-            QlipEnginesLoader._swap_lora_stack(groups, lora_stack, max_rank)
+            QlipEnginesLoader._swap_lora_stack(
+                groups, lora_stack, MAX_LORA_RANK
+            )
             print("[qlip] QlipLoraSwitch: LoRA swapped")
         else:
             print("[qlip] QlipLoraSwitch: LoRA enabled (keeping current)")
