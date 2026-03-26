@@ -4,6 +4,12 @@ GPU-accelerated inference for diffusion models in ComfyUI, powered by [Qlip](htt
 
 Qlip compiles transformer blocks into optimized engines, delivering significant speedups with full runtime LoRA support. Engines are compiled once and reused across all inference runs.
 
+<p align="center">
+  <img src="assets/example_image.png" alt="ComfyUI-Qlip workflow example" width="700">
+  <br>
+  <em>FLUX.2 Klein 9B with LoRA in ComfyUI. Just add the Qlip Engines Loader and Qlip LoRA Stack nodes to any existing workflow — works with any supported model and any sampler, as long as the compiled engines support the required input shapes.</em>
+</p>
+
 ## Table of Contents
 
 - [How It Works](#how-it-works)
@@ -30,7 +36,7 @@ Qlip compiles transformer blocks into optimized engines, delivering significant 
 |-------|-------------|------------|------|---------------------|
 | [**FLUX.2 Klein**](https://huggingface.co/black-forest-labs/FLUX.2-klein-9B) | Dual-stream DiT | 9B | Image | [TheStageAI/Elastic-FLUX-2-Klein](https://huggingface.co/TheStageAI/Elastic-FLUX-2-Klein) |
 | [**LTX-Video 2**](https://huggingface.co/Lightricks/LTX-2) (LTXAV) | Audio-Video DiT | 19B | Video | [TheStageAI/Elastic-LTX-2](https://huggingface.co/TheStageAI/Elastic-LTX-2) |
-| [**Z-Image-Turbo**](https://huggingface.co/Comfy-Org/z_image_turbo) | NextDiT (Lumina2) | — | Image | [TheStageAI/Elastic-Z-Image-Turbo](https://huggingface.co/TheStageAI/Elastic-Z-Image-Turbo) |
+| [**Z-Image-Turbo**](https://huggingface.co/Comfy-Org/z_image_turbo) | NextDiT (Lumina2) | 6B | Image | [TheStageAI/Elastic-Z-Image-Turbo](https://huggingface.co/TheStageAI/Elastic-Z-Image-Turbo) |
 
 More models coming soon — stay tuned for updates.
 
@@ -70,7 +76,7 @@ Supports any resolution from 512x512 to 2048x2048 (including non-square and port
 
 ## Benchmarks
 
-All measurements: single image/video generation, batch size 1, H100. Current precompiled engines include LoRA support, which adds minor overhead (~5-15%) compared to non-LoRA engines. Non-LoRA engines with faster inference will be available in a future release.
+All measurements: single image/video generation, batch size 1, H100, torch 2.8.0, **warm run** (second run, engines already loaded). Current precompiled engines include LoRA support, which adds minor overhead (~5-15%) compared to non-LoRA engines. Non-LoRA engines with faster inference will be available in a future release.
 
 ### Image Generation (1024x1024, 8 steps, cfg=1)
 
@@ -101,13 +107,26 @@ All measurements: single image/video generation, batch size 1, H100. Current pre
 
 ## Installation
 
-### 1. Prerequisites
+### Prerequisites
 
 - Python 3.10+
 - NVIDIA GPU with CUDA 12.x (Hopper recommended)
 - ComfyUI installed and working
 
-### 2. Install Qlip and dependencies
+### Option A: Install from Comfy Registry (recommended)
+
+> If ComfyUI-Qlip is registered in the Comfy Registry, you can install it directly from the ComfyUI Manager or CLI. Dependencies will be installed automatically from `requirements.txt`.
+
+```bash
+# Using comfy-cli
+comfy node install comfyui-qlip
+```
+
+After installation, you still need to set up the **TheStage API token** (see below) — without it, Qlip packages won't have access to the engine runtime.
+
+### Option B: Install manually
+
+#### 1. Install Qlip and dependencies
 
 ```bash
 # Qlip core (compilation & inference)
@@ -118,26 +137,27 @@ pip install 'qlip.core[nvidia]' \
 pip install 'thestage-elastic-models[nvidia]' \
     --extra-index-url https://thestage.jfrog.io/artifactory/api/pypi/pypi-thestage-ai-production/simple
 
-# HuggingFace Hub (for engine downloads/uploads)
+# HuggingFace Hub (for engine downloads)
 pip install huggingface-hub
 ```
 
-### 3. Setup TheStage API token
-
-Go to [app.thestage.ai](https://app.thestage.ai), login and generate an API token.
-
-```bash
-thestage config set --access-token <YOUR_API_TOKEN>
-```
-
-### 4. Install ComfyUI-Qlip nodes
+#### 2. Install ComfyUI-Qlip nodes
 
 ```bash
 cd /path/to/ComfyUI/custom_nodes
-git clone https://github.com/TheStageAI/ComfyUI-Qlip qlip_nodes
+git clone https://github.com/TheStageAI/ComfyUI-Qlip
 ```
 
-### 5. Install additional custom nodes (for benchmarking)
+### Setup TheStage API token (required for both options)
+
+Go to [app.thestage.ai](https://app.thestage.ai), login and generate an API token. This token is required for Qlip engine access.
+
+```bash
+pip install thestage
+thestage config set --access-token <YOUR_API_TOKEN>
+```
+
+### (Optional) Additional custom nodes for benchmarking
 
 ```bash
 cd /path/to/ComfyUI/custom_nodes

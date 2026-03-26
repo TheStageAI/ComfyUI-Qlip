@@ -61,6 +61,15 @@ def download_engines_from_hf(hf_repo: str, local_dir: Optional[str] = None) -> P
     """
     from huggingface_hub import snapshot_download
 
+    # Strip full HuggingFace URL to "org/repo:subpath" format
+    # e.g. "https://huggingface.co/TheStageAI/Elastic-FLUX-2-Klein/tree/main/models/H100/klein-9b_lora"
+    #    → "TheStageAI/Elastic-FLUX-2-Klein:models/H100/klein-9b_lora"
+    if hf_repo.startswith("https://"):
+        hf_repo = hf_repo.split("huggingface.co/", 1)[-1]
+    if "/tree/main/" in hf_repo:
+        repo_part, subpath_part = hf_repo.split("/tree/main/", 1)
+        hf_repo = f"{repo_part}:{subpath_part}"
+
     # Parse optional subpath: "org/repo:subpath"
     if ":" in hf_repo:
         repo_id, subpath = hf_repo.rsplit(":", 1)

@@ -1,0 +1,14 @@
+[project]
+name = "comfyui-qlip"
+description = "GPU-accelerated inference for diffusion models with runtime LoRA support, powered by Qlip from TheStage AI"
+version = "1.0.0"
+license = { file = "LICENSE.txt" }
+requires-python = ">=3.10"
+
+[project.urls]
+Repository = "https://github.com/TheStageAI/ComfyUI-Qlip"
+
+[tool.comfy]
+PublisherId = "thestageai"
+DisplayName = "ComfyUI-Qlip"
+Icon = ""

@@ -1,5 +1,5 @@
 from .nodes import QlipEnginesLoader, QlipLoraStack, QlipLoraSwitch
-from .timer_nodes import QlipTimerStart, QlipTimerStop, QlipTimerReport
+from .nodes import QlipTimerStart, QlipTimerStop, QlipTimerReport
 
 NODE_CLASS_MAPPINGS = {
     "QlipEnginesLoader": QlipEnginesLoader,

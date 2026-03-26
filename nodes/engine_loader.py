@@ -3,7 +3,7 @@ from pathlib import Path
 
 import torch
 
-from .utils import (
+from ..utils import (
     find_engines_dir, has_engine_files, _add_qlip_to_path,
     _infer_lora_config_from_model, _discover_block_groups,
     load_lora_config_json
@@ -429,14 +429,14 @@ class QlipEnginesLoader:
             manager.clear_weights()
             print(f"[qlip] {block_attr}: {num_blocks} blocks, rank={used_rank}")
         else:
-            used_rank = max_rank
+            used_rank = 1  # Minimal rank for zero LoRA — least compute overhead
             manager = LoRAManager(config, device="cuda", dtype=torch.bfloat16)
             dummy = create_zero_lora_packed(
                 config, used_rank, device="cuda", dtype=torch.bfloat16
             )
             packed = [dummy for _ in range(num_blocks)]
             print(f"[qlip] {block_attr}: {num_blocks} blocks, "
-                  f"zero lora_packed (rank={max_rank})")
+                  f"zero lora_packed (rank={used_rank})")
 
         group = LoRABlockGroup(
             manager=manager,
@@ -463,13 +463,13 @@ class QlipEnginesLoader:
         # FLUX Klein global_modulation
         if (getattr(dm, 'params', None)
                 and getattr(dm.params, 'global_modulation', False)):
-            from .utils import patch_forward_orig_for_modulation
+            from ..utils import patch_forward_orig_for_modulation
             patch_forward_orig_for_modulation(dm)
 
         # LTXAV (audio-video LTX-2)
-        from .utils import is_ltxav_model
+        from ..utils import is_ltxav_model
         if is_ltxav_model(dm):
-            from .utils import (
+            from ..utils import (
                 patch_compressed_timestep,
                 patch_process_transformer_blocks,
             )
