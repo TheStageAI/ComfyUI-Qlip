@@ -78,7 +78,7 @@ Supports any resolution from 512x512 to 2048x2048 (including non-square and port
 
 All measurements: single image/video generation, batch size 1, H100, torch 2.8.0, **warm run** (second run, engines already loaded). Current precompiled engines include LoRA support, which adds minor overhead (~5-15%) compared to non-LoRA engines. Non-LoRA engines with faster inference will be available in a future release.
 
-### Image Generation (1024x1024, 8 steps, cfg=1)
+### Image Generation (1024x1024, 20 steps for flux, 8 steps for z-image, cfg=1)
 
 | Model | Method | Time (s) | Speedup |
 |-------|--------|----------|---------|
