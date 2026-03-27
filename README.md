@@ -20,6 +20,7 @@ Qlip compiles transformer blocks into optimized engines, delivering significant 
 - [Nodes](#nodes)
 - [Workflows](#workflows)
 - [LoRA Details](#lora-details)
+- [Compiling New Models](#compiling-new-models)
 - [Troubleshooting](#troubleshooting)
 
 ## How It Works
@@ -110,52 +111,59 @@ All measurements: single image/video generation, batch size 1, H100, torch 2.8.0
 ### Prerequisites
 
 - Python 3.10+
-- NVIDIA GPU with CUDA 12.x (Hopper recommended)
-- ComfyUI installed and working
+- NVIDIA GPU with CUDA 12.x (Hopper, Blackwell, Ada Lovelace)
+- ComfyUI installed and working (see below if starting from scratch)
 
-### Option A: Install from Comfy Registry (recommended)
+### Step 1: Install ComfyUI-Qlip nodes
 
-> If ComfyUI-Qlip is registered in the Comfy Registry, you can install it directly from the ComfyUI Manager or CLI. Dependencies will be installed automatically from `requirements.txt`.
-
+**From scratch** (no ComfyUI yet):
 ```bash
-# Using comfy-cli
-comfy node install comfyui-qlip
+git clone https://github.com/comfyanonymous/ComfyUI.git
+cd ComfyUI
+python3 -m venv venv
+source venv/bin/activate
+pip install --upgrade pip
+pip install -r requirements.txt
+cd custom_nodes
+git clone https://github.com/TheStageAI/ComfyUI-Qlip
+cd ..
 ```
 
-After installation, you still need to set up the **TheStage API token** (see below) — without it, Qlip packages won't have access to the engine runtime.
-
-### Option B: Install manually
-
-#### 1. Install Qlip and dependencies
-
+**Existing ComfyUI** — activate your venv and clone:
 ```bash
-# Qlip core (compilation & inference)
-pip install 'qlip.core[nvidia]' \
-    --extra-index-url https://thestage.jfrog.io/artifactory/api/pypi/pypi-thestage-ai-production/simple
-
-# elastic_models (LoRA runtime support)
-pip install 'thestage-elastic-models[nvidia]' \
-    --extra-index-url https://thestage.jfrog.io/artifactory/api/pypi/pypi-thestage-ai-production/simple
-
-# HuggingFace Hub (for engine downloads)
-pip install huggingface-hub
-```
-
-#### 2. Install ComfyUI-Qlip nodes
-
-```bash
+source /path/to/ComfyUI/venv/bin/activate
 cd /path/to/ComfyUI/custom_nodes
 git clone https://github.com/TheStageAI/ComfyUI-Qlip
 ```
 
-### Setup TheStage API token (required for both options)
+> If ComfyUI-Qlip is published to the Comfy Registry, you can also install via `comfy node install comfyui-qlip`.
 
-Go to [app.thestage.ai](https://app.thestage.ai), login and generate an API token. This token is required for Qlip engine access.
+### Step 2: Install Qlip dependencies
+
+From the ComfyUI-Qlip directory (with the same venv activated):
+
+```bash
+pip install -r custom_nodes/ComfyUI-Qlip/requirements.txt
+```
+
+This installs `qlip.core[nvidia]` and `thestage-elastic-models[nvidia]` from the TheStage AI package registry.
+
+### Step 3: Setup TheStage API token
+
+Get your token at [app.thestage.ai](https://app.thestage.ai). Required for Qlip engine access.
 
 ```bash
 pip install thestage
 thestage config set --access-token <YOUR_API_TOKEN>
 ```
+
+### Step 4: Launch ComfyUI
+
+```bash
+python main.py --listen 0.0.0.0 --port 8188
+```
+
+> Always activate the same venv before launching: `source venv/bin/activate`
 
 ### (Optional) Additional custom nodes for benchmarking
 
@@ -334,13 +342,53 @@ LoRA weights are **runtime inputs** to compiled engines, not baked into weights.
 - Engines compiled with `--lora` work both with and without LoRA (auto-detected via `lora_config.json`)
 - LyCORIS / LoKR format is not supported
 
+## Compiling New Models
+
+You can compile any ComfyUI-compatible model into Qlip engines. This is useful when:
+- You want to accelerate a model not in the precompiled engines list
+- You need engines for a specific GPU (engines are hardware-specific)
+- You want custom resolution ranges or LoRA support
+
+### Using Claude Code (recommended)
+
+The easiest way to add a new model is with [Claude Code](https://claude.ai/claude-code). This repository includes an [agent skill](skills/qlip-model-compiler/SKILL.md) that knows how to write compilation scripts, handle model-specific patches, and run compilation.
+
+**What to provide:**
+
+1. **ComfyUI workflow JSON** — export from ComfyUI. **Important**: expand all subgraphs/groups before exporting so every node is visible in the JSON file
+2. **Path to ComfyUI** installation (so the agent can read model source code)
+3. **Model path** and **LoRA path** (if needed)
+4. **Target GPU** and **target resolutions**
+5. **Server SSH access** (if compiling remotely)
+
+**Example prompt:**
+```
+I want to compile my model with Qlip.
+
+Workflow: /path/to/my_workflow.json
+ComfyUI: /path/to/ComfyUI
+Model: my_model.safetensors (UNETLoader, in models/diffusion_models/)
+LoRA: my_lora.safetensors (in models/loras/)
+Text encoder: my_encoder.safetensors (CLIPLoader)
+VAE: my_vae.safetensors
+Target: H100, 512-1024px, FP8 quantization, LoRA support
+```
+
+Claude will analyze the workflow and model source code, write download/compile/benchmark scripts, run compilation, and add inference support to the nodes if needed.
+
+### Manual Compilation
+
+If you prefer to write scripts manually, see the [compilation skill reference](skills/qlip-model-compiler/SKILL.md) for the full API reference including imports, function signatures, patching patterns, and bash wrapper templates.
+
 ## Troubleshooting
 
 | Problem | Solution |
 |---------|----------|
 | Shape mismatch errors | Ensure engines match the model (LoRA-enabled engines need `lora_config.json` in the engines directory) |
 | Slow first run | Normal — engine loading takes a few seconds on first use |
-| Engines don't work after GPU change | Engines are GPU-specific — recompile after changing hardware or TensorRT version |
+| Engines don't work after GPU change | Engines are GPU-specific — recompile after changing hardware |
+| FP8 quality looks bad | Try `--unfuse-qkv` and `--skip-first-blocks 1 --skip-last-blocks 1` |
+| LoRA not taking effect | Check that `lora_config.json` exists in engines directory and LoRA rank ≤ max compiled rank |
 | `flash_attn 3 package is not installed` | Install with `pip install flash-attn --no-build-isolation` (optional, Hopper only) |
 
 ## License
