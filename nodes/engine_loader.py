@@ -169,7 +169,8 @@ class QlipEnginesLoader:
             dm._qlip_imanager = imanager
             dm._qlip_memory_manager = mm
 
-            self._apply_model_patches(dm)
+            self._apply_signature_patches(dm)
+            self._apply_caller_patches(dm)
 
             groups = self._lora_groups_cache[cache_key]
             prev_key = self._last_lora_key.get(cache_key)
@@ -202,6 +203,10 @@ class QlipEnginesLoader:
                 dm, lora_stack, lora_config, MAX_LORA_RANK
             )
 
+        # Signature patches BEFORE engine loading —
+        # auto_setup() reads block.model.forward signature for input mapping
+        self._apply_signature_patches(dm)
+
         # Load TRT engines
         if not engines_cached:
             print(f"[qlip] Loading TRT engines from {engines_dir}...")
@@ -228,8 +233,8 @@ class QlipEnginesLoader:
         dm._qlip_imanager = imanager
         dm._qlip_memory_manager = mm
 
-        # Model-specific patches (AFTER engine loading)
-        self._apply_model_patches(dm)
+        # Caller patches AFTER engine loading
+        self._apply_caller_patches(dm)
 
         # LoRA wrapper (AFTER engine loading — wraps CompiledModules)
         if with_lora:
@@ -453,12 +458,22 @@ class QlipEnginesLoader:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _apply_model_patches(dm):
-        """Apply model-specific patches after engine loading.
+    def _apply_signature_patches(dm):
+        """Apply block signature patches BEFORE engine loading.
 
-        Detects model type and applies appropriate patches:
-        - FLUX Klein: flatten ModulationOut → stacked tensor
-        - LTXAV: expand CompressedTimestep + stack pe tuples → tensors
+        These patches change block.model.forward signature so that
+        auto_setup() sees the correct input names matching the engine.
+        Only needed for models where block.forward was restructured
+        at compile time (e.g., merged inputs into joint tensor).
+        """
+        pass
+
+    @staticmethod
+    def _apply_caller_patches(dm):
+        """Apply caller patches AFTER engine loading.
+
+        These patches modify the transformer's forward to prepare
+        inputs for compiled blocks (concat, stack, set attributes).
         """
         # FLUX Klein global_modulation
         if (getattr(dm, 'params', None)
