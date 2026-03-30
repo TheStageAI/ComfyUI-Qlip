@@ -5,6 +5,7 @@ import torch
 
 from ..utils import (
     find_engines_dir, has_engine_files, _add_qlip_to_path,
+    convert_lora_format,
     _infer_lora_config_from_model, _discover_block_groups,
     load_lora_config_json
 )
@@ -238,7 +239,7 @@ class QlipEnginesLoader:
 
         # LoRA wrapper (AFTER engine loading — wraps CompiledModules)
         if with_lora:
-            from elastic_models.diffusers.lora import QlipLoraModule
+            from qlip.lora_support import QlipLoraModule
 
             for group in lora_groups:
                 QlipLoraModule.setup(
@@ -299,7 +300,7 @@ class QlipEnginesLoader:
 
     @staticmethod
     def _swap_lora_stack(groups, lora_stack, max_rank):
-        """Hot-swap LoRA weights from a multi-file lora_stack. (use elastic_models.swap_lora in the future)"""
+        """Hot-swap LoRA weights from a multi-file lora_stack."""
         # Clear old weights
         for g in groups:
             g.manager.clear_weights()
@@ -359,7 +360,7 @@ class QlipEnginesLoader:
         Returns:
             list[LoRABlockGroup]
         """
-        from elastic_models.diffusers.lora import LoRAManager
+        from qlip.lora_support import LoRAManager
 
         has_real_lora = lora_stack and len(lora_stack) > 0
 
@@ -368,7 +369,9 @@ class QlipEnginesLoader:
             configs = lora_config
         elif has_real_lora:
             first_path = lora_stack[0]["path"]
-            configs = LoRAManager.infer_config(first_path)
+            configs = LoRAManager.infer_config(
+                first_path, lora_format_converter=convert_lora_format,
+            )
             logger.warning(
                 "No lora_config.json in engines dir — config inferred from %s",
                 Path(first_path).name,
@@ -408,7 +411,7 @@ class QlipEnginesLoader:
 
     def _setup_block_group(self, dm, block_attr, config, lora_stack, max_rank):
         """Setup one block group: pack tensors for LoRA."""
-        from elastic_models.diffusers.lora import (
+        from qlip.lora_support import (
             LoRAManager, LoRABlockGroup, create_zero_lora_packed,
         )
 
@@ -416,7 +419,8 @@ class QlipEnginesLoader:
         num_blocks = len(blocks)
 
         if lora_stack:
-            manager = LoRAManager(config, device="cuda", dtype=torch.bfloat16)
+            manager = LoRAManager(config, device="cuda", dtype=torch.bfloat16,
+                                    lora_format_converter=convert_lora_format)
             for entry in lora_stack:
                 count = manager.load_from_safetensors(
                     entry["path"], entry["strength"]
@@ -435,7 +439,8 @@ class QlipEnginesLoader:
             print(f"[qlip] {block_attr}: {num_blocks} blocks, rank={used_rank}")
         else:
             used_rank = 1  # Minimal rank for zero LoRA — least compute overhead
-            manager = LoRAManager(config, device="cuda", dtype=torch.bfloat16)
+            manager = LoRAManager(config, device="cuda", dtype=torch.bfloat16,
+                                    lora_format_converter=convert_lora_format)
             dummy = create_zero_lora_packed(
                 config, used_rank, device="cuda", dtype=torch.bfloat16
             )

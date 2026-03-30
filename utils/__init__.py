@@ -2,6 +2,7 @@ from .helpers import (
     find_engines_dir,
     has_engine_files,
     _add_qlip_to_path,
+    convert_lora_format,
     _infer_lora_config_from_model,
     _discover_block_groups,
     load_lora_config_json,

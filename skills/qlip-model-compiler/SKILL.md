@@ -626,7 +626,7 @@ model_patcher, clip, vae = comfy.sd.load_checkpoint_guess_config(ckpt_path)
 
 **Try auto-detection first:**
 ```python
-from elastic_models.diffusers.lora import LoRAManager, QlipLoraModule
+from qlip.lora_support import LoRAManager, QlipLoraModule
 configs = LoRAManager.infer_config(lora_path)
 ```
 
@@ -673,7 +673,7 @@ for attr in ["transformer_blocks", "blocks", "layers", "double_blocks"]:
 
 **Build config manually:**
 ```python
-from elastic_models.diffusers.lora import LoRAConfig, LayerConfig
+from qlip.lora_support import LoRAConfig, LayerConfig
 
 lora_config = LoRAConfig(
     name="transformer_blocks",
@@ -866,11 +866,11 @@ if lora_configs:
 | `QuantizationManager` | `qlip.quantization` | FP8/INT8 quantization setup |
 | `NVIDIA_FLOAT_W8A8` | `qlip.compiler.nvidia` | Static FP8 quantization config |
 | `NVIDIA_FLOAT_W8A8_PER_TOKEN_DYNAMIC` | `qlip.compiler.nvidia` | Dynamic FP8 quantization config |
-| `LoRAManager` | `elastic_models.diffusers.lora` | Load/pack LoRA weights |
-| `LoRAConfig` | `elastic_models.diffusers.lora` | LoRA structure definition |
-| `LayerConfig` | `elastic_models.diffusers.lora` | Single layer in LoRA config |
-| `QlipLoraModule` | `elastic_models.diffusers.lora` | Patches blocks for LoRA compilation + inference |
-| `LoRAManager.infer_config(path)` | `elastic_models.diffusers.lora` | Auto-detect LoRA config from file (may fail — see manual config) |
+| `LoRAManager` | `qlip.lora_support` | Load/pack LoRA weights |
+| `LoRAConfig` | `qlip.lora_support` | LoRA structure definition |
+| `LayerConfig` | `qlip.lora_support` | Single layer in LoRA config |
+| `QlipLoraModule` | `qlip.lora_support` | Patches blocks for LoRA compilation + inference |
+| `LoRAManager.infer_config(path)` | `qlip.lora_support` | Auto-detect LoRA config from file (may fail — see manual config) |
 | `cm.setup_modules(module_types=...)` | `qlip.compiler.nvidia` | Find blocks by type and wrap in CompiledModule |
 | `cm.setup_modules(modules=[...])` | `qlip.compiler.nvidia` | Find blocks by name and wrap in CompiledModule |
 | `module.ioconfig.set_axes_profiles(axes, profiles)` | `qlip.compiler` | Set dynamic axes and shape profiles |

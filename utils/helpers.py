@@ -132,6 +132,69 @@ def _add_qlip_to_path():
 
 
 # ---------------------------------------------------------------------------
+# LoRA format conversion (requires diffusers)
+# ---------------------------------------------------------------------------
+
+def convert_lora_format(raw_weights):
+    """Detect and convert LoRA format to diffusers format.
+
+    Supports Kohya, XLabs, BFL Control formats.
+    Requires `diffusers` package (listed in ComfyUI-Qlip requirements.txt).
+
+    Pass this function as ``lora_format_converter`` to ``LoRAManager()``
+    and ``LoRAManager.infer_config()``.
+    """
+    # Kohya detection: prefix before .lora_down has no dots with digit segments
+    lora_down_keys = [k for k in raw_weights if ".lora_down.weight" in k]
+    is_kohya = False
+    if lora_down_keys:
+        sample_prefix = lora_down_keys[0].split(".lora_down.weight")[0]
+        parts = sample_prefix.split(".")
+        has_block_index = any(p.isdigit() for p in parts)
+        is_kohya = not has_block_index or len(parts) <= 2
+
+    if is_kohya:
+        logger.info("Detected Kohya format, converting to diffusers format...")
+        try:
+            from diffusers.loaders.lora_conversion_utils import (
+                _convert_kohya_flux_lora_to_diffusers,
+            )
+            return _convert_kohya_flux_lora_to_diffusers(raw_weights)
+        except ImportError:
+            logger.warning("diffusers conversion utils not available")
+            return raw_weights
+
+    # XLabs detection
+    is_xlabs = any("processor" in k for k in raw_weights)
+    if is_xlabs:
+        logger.info("Detected XLabs format, converting to diffusers format...")
+        try:
+            from diffusers.loaders.lora_conversion_utils import (
+                _convert_xlabs_flux_lora_to_diffusers,
+            )
+            return _convert_xlabs_flux_lora_to_diffusers(raw_weights)
+        except ImportError:
+            logger.warning("diffusers conversion utils not available")
+            return raw_weights
+
+    # BFL Control detection
+    is_bfl_control = any("query_norm.scale" in k for k in raw_weights)
+    if is_bfl_control:
+        logger.info("Detected BFL Control format, converting to diffusers format...")
+        try:
+            from diffusers.loaders.lora_conversion_utils import (
+                _convert_bfl_flux_control_lora_to_diffusers,
+            )
+            return _convert_bfl_flux_control_lora_to_diffusers(raw_weights)
+        except ImportError:
+            logger.warning("diffusers conversion utils not available")
+            return raw_weights
+
+    # Already diffusers format
+    return raw_weights
+
+
+# ---------------------------------------------------------------------------
 # LoRA config helpers
 # ---------------------------------------------------------------------------
 
@@ -150,7 +213,7 @@ def _infer_lora_config_from_model(dm, block_attr="double_blocks", prefix="double
         LoRAConfig or None if no blocks/linears found
     """
     _add_qlip_to_path()
-    from elastic_models.diffusers.lora import LayerConfig, LoRAConfig
+    from qlip.lora_support import LayerConfig, LoRAConfig
 
     blocks = getattr(dm, block_attr, [])
     if not blocks:
@@ -231,7 +294,7 @@ def load_lora_config_json(path):
     import json
 
     _add_qlip_to_path()
-    from elastic_models.diffusers.lora import LayerConfig, LoRAConfig
+    from qlip.lora_support import LayerConfig, LoRAConfig
 
     with open(path) as f:
         data = json.load(f)
