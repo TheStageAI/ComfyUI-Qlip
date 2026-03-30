@@ -1,6 +1,3 @@
 --extra-index-url https://thestage.jfrog.io/artifactory/api/pypi/pypi-thestage-ai-production/simple
 qlip.core[nvidia]
 thestage-elastic-models[nvidia]
-
-# torch==2.8.0
-# torchvision==0.23.0
