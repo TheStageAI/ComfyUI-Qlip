@@ -333,6 +333,7 @@ def patch_forward_orig_for_modulation(transformer):
     def patched_forward_orig(
         img, img_ids, txt, txt_ids, timesteps, y,
         guidance=None, control=None, transformer_options={}, attn_mask=None,
+        **kwargs,
     ):
         import comfy.ldm.flux.layers as flux_layers
 
@@ -493,7 +494,7 @@ def is_ltxav_model(dm) -> bool:
 def patch_compressed_timestep(transformer):
     """Patch _prepare_timestep to return raw tensors instead of CompressedTimestep.
 
-    CompressedTimestep is a Python object (not a tensor) — TRT engines expect
+    CompressedTimestep is a Python object (not a tensor) — QLIP engines expect
     raw tensors. The block's get_ada_values handles plain tensors via the else
     branch, so raw tensors work fine.
     """
@@ -501,7 +502,6 @@ def patch_compressed_timestep(transformer):
 
     def patched_prepare_timestep(timestep, batch_size, hidden_dtype, **kwargs):
         result = orig_prepare(timestep, batch_size, hidden_dtype, **kwargs)
-        timesteps, embedded = result
 
         from comfy.ldm.lightricks.av_model import CompressedTimestep
 
@@ -509,6 +509,14 @@ def patch_compressed_timestep(transformer):
             if isinstance(obj, CompressedTimestep):
                 return obj.expand()
             return obj
+
+        # Handle both 2-tuple (old) and 3-tuple (new) return formats
+        if len(result) == 2:
+            timesteps, embedded = result
+            extra = ()
+        else:
+            timesteps, embedded = result[0], result[1]
+            extra = tuple(result[2:])
 
         timesteps_raw = []
         for item in timesteps:
@@ -518,7 +526,15 @@ def patch_compressed_timestep(transformer):
                 timesteps_raw.append(expand_if_compressed(item))
 
         embedded_raw = [expand_if_compressed(e) for e in embedded]
-        return timesteps_raw, embedded_raw
+
+        # Expand any CompressedTimestep in extra values (e.g. prompt_timestep)
+        extra_raw = tuple(
+            expand_if_compressed(x) if not isinstance(x, (list, tuple))
+            else [expand_if_compressed(i) for i in x]
+            for x in extra
+        )
+
+        return (timesteps_raw, embedded_raw) + extra_raw
 
     transformer._prepare_timestep = patched_prepare_timestep
     print("[qlip] Patched _prepare_timestep: CompressedTimestep → raw tensors")
@@ -527,7 +543,7 @@ def patch_compressed_timestep(transformer):
 def patch_process_transformer_blocks(transformer):
     """Patch _process_transformer_blocks to stack pe tuples into [2,...] tensors.
 
-    At inference time, TRT engines expect stacked pe tensors (baked at compile).
+    At inference time, QLIP engines expect stacked pe tensors (baked at compile).
     The original _process_transformer_blocks passes (cos, sin, split_mode) tuples
     which the engine can't accept. This patch stacks cos+sin and stores split_mode
     on block.model attributes.

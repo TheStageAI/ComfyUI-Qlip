@@ -2529,7 +2529,7 @@
         "Node name for S&R": "QlipLoraStack"
       },
       "widgets_values": [
-        "/home/ubuntu/Wan2.2Demo_ComfyUI/ComfyUI/models/loras/ltx-2-19b-lora-camera-control-dolly-left.safetensors",
+        "",
         1
       ]
     },
@@ -2579,8 +2579,8 @@
         "Node name for S&R": "QlipEnginesLoader"
       },
       "widgets_values": [
-        "/home/ubuntu/Wan2.2Demo_ComfyUI/engines/ltx2-19b-lora",
         "",
+        "TheStageAI/Elastic-LTX-2:models/H100/ltx-2-19b-distilled-fp8_lora",
         ""
       ]
     }

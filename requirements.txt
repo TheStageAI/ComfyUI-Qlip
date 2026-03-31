@@ -1,3 +1,12 @@
 --extra-index-url https://thestage.jfrog.io/artifactory/api/pypi/pypi-thestage-ai-production/simple
 qlip.core[nvidia]
 diffusers
+triton
+cupy-cuda12x==13.3.0
+cuda-python==12.8.0
+tensorrt-cu12==10.13.3.9
+tensorrt-cu12-bindings==10.13.3.9
+tensorrt-cu12-libs==10.13.3.9
+torch==2.9.1
+torchvision==0.24.1
+torchaudio==2.9.1

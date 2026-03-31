@@ -1085,8 +1085,8 @@
         "Node name for S&R": "QlipEnginesLoader"
       },
       "widgets_values": [
-        "/home/ubuntu/Wan2.2Demo_ComfyUI/engines/klein-9b-lora",
         "",
+        "TheStageAI/Elastic-FLUX-2-Klein:models/H100/klein-9b-fp8_lora",
         ""
       ]
     },
@@ -1181,7 +1181,7 @@
         "Node name for S&R": "QlipLoraStack"
       },
       "widgets_values": [
-        "/home/ubuntu/Wan2.2Demo_ComfyUI/ComfyUI/models/loras/ArcaneStyle.safetensors",
+        "",
         1
       ]
     }

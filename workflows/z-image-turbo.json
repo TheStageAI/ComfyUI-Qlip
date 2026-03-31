@@ -711,7 +711,7 @@
       ],
       "flags": {},
       "order": 6,
-      "mode": 0,
+      "mode": 4,
       "inputs": [
         {
           "name": "prev_stack",
@@ -733,7 +733,7 @@
         "Node name for S&R": "QlipLoraStack"
       },
       "widgets_values": [
-        "/home/ubuntu/Wan2.2Demo_ComfyUI/ComfyUI/models/loras/pixel_art_style_z_image_turbo.safetensors",
+        "",
         1
       ]
     },
@@ -783,8 +783,8 @@
         "Node name for S&R": "QlipEnginesLoader"
       },
       "widgets_values": [
-        "/home/ubuntu/Wan2.2Demo_ComfyUI/engines/z-image-turbo-fp8-lora",
         "",
+        "TheStageAI/Elastic-Z-Image-Turbo:models/H100/z-image-turbo-fp8_lora",
         false
       ]
     }
@@ -963,13 +963,13 @@
   "config": {},
   "extra": {
     "ds": {
-      "scale": 0.721669651543349,
+      "scale": 0.5964211996226031,
       "offset": [
-        1052.8174953865173,
-        662.0045803200047
+        1023.1224680922825,
+        424.3335079211716
       ]
     },
-    "frontendVersion": "1.38.13",
+    "frontendVersion": "1.42.8",
     "workflowRendererVersion": "LG",
     "VHS_latentpreview": false,
     "VHS_latentpreviewrate": 0,

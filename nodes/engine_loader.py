@@ -67,7 +67,7 @@ class QlipLoraStack:
 
 class QlipEnginesLoader:
     """
-    Load pre-compiled TRT engines and replace transformer blocks
+    Load pre-compiled QLIP engines and replace transformer blocks
     with CompiledModule instances.
 
     LoRA support is auto-detected:
@@ -107,7 +107,7 @@ class QlipEnginesLoader:
                 }),
                 "cuda_graph": ("BOOLEAN", {
                     "default": False,
-                    "tooltip": "Enable CUDA Graph capture for TRT engines. "
+                    "tooltip": "Enable CUDA Graph capture for QLIP engines. "
                                "Reduces kernel launch overhead for faster inference. "
                                "First run captures the graph, subsequent runs replay it.",
                 }),
@@ -208,9 +208,9 @@ class QlipEnginesLoader:
         # auto_setup() reads block.model.forward signature for input mapping
         self._apply_signature_patches(dm)
 
-        # Load TRT engines
+        # Load QLIP engines
         if not engines_cached:
-            print(f"[qlip] Loading TRT engines from {engines_dir}...")
+            print(f"[qlip] Loading QLIP engines from {engines_dir}...")
 
             from qlip.inference.nvidia import NvidiaInferenceManager
             from qlip.inference.nvidia.session import NvidiaMemoryManager
@@ -260,7 +260,7 @@ class QlipEnginesLoader:
         mm.allocate_memory()
         print("[qlip] Device memory allocated")
 
-        # Enable CUDA Graph on TRT sessions
+        # Enable CUDA Graph on QLIP sessions
         if cuda_graph:
             self._enable_cuda_graph(imanager)
 
@@ -274,7 +274,7 @@ class QlipEnginesLoader:
     def _disable_lora(groups):
         """Disable LoRA by replacing packed tensors with rank-1 zero tensors.
 
-        Uses rank=1 so TRT selects the smallest optimization profile,
+        Uses rank=1 so QLIP selects the smallest optimization profile,
         minimizing LoRA MatMul overhead when LoRA is not active.
         """
         for g in groups:
@@ -498,7 +498,7 @@ class QlipEnginesLoader:
 
     @staticmethod
     def _enable_cuda_graph(imanager):
-        """Enable CUDA Graph capture on all TRT sessions.
+        """Enable CUDA Graph capture on all Qlip sessions.
 
         Must be called AFTER memory allocation — sessions need
         pre-allocated tensors (store_tensors=True) for graph capture.
@@ -517,7 +517,7 @@ class QlipEnginesLoader:
 
 class QlipLoraSwitch:
     """
-    Enable or disable LoRA on a model with pre-loaded TRT engines.
+    Enable or disable LoRA on a model with pre-loaded QLIP engines.
 
     Must be used AFTER QlipEnginesLoader with LoRA-enabled engines.
     Mutates LoRA packed tensors in-place — the wrapper sees changes

@@ -60,20 +60,17 @@ Audio-video generation model. Currently only the **distilled** variant is compil
 
 | Variant | CFG | Batch | Workflow | Static Sizes (WxHxFrames) | Dynamic Range |
 |---------|-----|-------|----------|--------------------------|---------------|
-| 19B **distilled** | 1.0 | 1 | i2v | 768x512x41, 1280x720x121, 1408x896x121 | 512px—768px—1408px, 9—41—121 frames |
+| 19B **distilled** | 1.0 | 1 | i2v | 768x512x41, 1280x720x121, 1408x896x121 | 512px—768px—1408px, 41—121 frames |
 
 Video resolution and frame count are both dynamic. Audio tokens are computed automatically from the frame count.
 
 #### Z-Image-Turbo
 
-Image generation model. Single engine supports both cfg=1.0 (batch=1) and cfg>1.0 (batch=2) — batch size is dynamic.
+Image generation model. Compiled with cfg=1.0, batch=1, static sizes only.
 
-| CFG | Batch | Static Sizes | Dynamic Range |
-|-----|-------|-------------|---------------|
-| 1.0 (turbo) | 1 | 1024x1024, 1024x768, 768x1024 | 512px — 1024px — 2048px |
-| >1.0 | 2 | 1024x1024, 1024x768, 768x1024 | 512px — 1024px — 2048px |
-
-Supports any resolution from 512x512 to 2048x2048 (including non-square and portrait orientations).
+| CFG | Batch | Static Sizes |
+|-----|-------|-------------|
+| 1.0 (turbo) | 1 | 1024x1024, 1024x768, 768x1024 |
 
 ## Benchmarks
 
@@ -120,6 +117,7 @@ All measurements: single image/video generation, batch size 1, H100, torch 2.8.0
 ```bash
 git clone https://github.com/comfyanonymous/ComfyUI.git
 cd ComfyUI
+git checkout 048dd2f3
 python3 -m venv venv
 source venv/bin/activate
 pip install --upgrade pip
@@ -292,6 +290,33 @@ Displays a summary table of all timer measurements. Connect the `trigger` input 
 Results auto-reset between workflow runs. Cold start values persist across runs for comparison.
 
 ## Workflows
+
+Ready-to-use ComfyUI workflow files are in [`workflows/`](workflows/):
+
+| File | Description |
+|------|-------------|
+| `Flux-Klein.json` | FLUX.2 Klein image generation workflow |
+| `video_ltx2_i2v_distilled.json` | LTX-2 image-to-video workflow |
+| `z-image-turbo.json` | Z-Image-Turbo image generation workflow |
+
+Model download scripts are in [`scripts/`](scripts/):
+
+| Script | Description |
+|--------|-------------|
+| `download_flux_klein_models.sh` | Downloads FLUX.2 Klein models (diffusion model, text encoder, VAE). Requires HF token (gated model) |
+| `download_ltx_2_models.sh` | Downloads LTX-2 models (checkpoints, text encoder, LoRAs, upscaler) |
+| `download_z_image_turbo_models.sh` | Downloads Z-Image-Turbo models (diffusion model, text encoder, VAE, LoRA) |
+
+To download models for a specific workflow:
+
+```bash
+export COMFYUI_PATH=/path/to/ComfyUI
+bash custom_nodes/ComfyUI-Qlip/scripts/download_flux_klein_models.sh
+bash custom_nodes/ComfyUI-Qlip/scripts/download_ltx_2_models.sh
+bash custom_nodes/ComfyUI-Qlip/scripts/download_z_image_turbo_models.sh
+```
+
+Scripts skip already-downloaded files, so they are safe to re-run. HuggingFace cache defaults to `/workspace/cache` — override with `HF_HUB_CACHE`.
 
 ### Basic (no LoRA)
 
