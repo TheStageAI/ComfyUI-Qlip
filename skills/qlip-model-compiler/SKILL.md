@@ -821,8 +821,6 @@ Examples:
 
 ### io_dtype debugging: `ElementWiseOperation must have same input types`
 
-This error appears when STRONGLY_TYPED mode (forced by WEIGHT_STREAMING) encounters mixed-dtype elementwise ops in the ONNX graph.
-
 **How to diagnose:**
 
 1. Read block.forward() and trace every input tensor through the computation
