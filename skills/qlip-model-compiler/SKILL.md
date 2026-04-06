@@ -668,12 +668,20 @@ Example: LTX-2 (video + audio processed separately).
 import comfy.sd
 import comfy.model_management
 
+# CRITICAL: Force BF16 weights via model_options.
+# comfy.sd.load_diffusion_model may convert BF16 checkpoint weights to FP16.
+# This causes Half/BFloat16 mismatch in TRT STRONGLY_TYPED mode, especially
+# with LoRA (lora_packed is BF16, but activations become FP16).
+# Always pass dtype=torch.bfloat16 in model_options:
+model_options = {"dtype": torch.bfloat16}
+
 # UNETLoader:
-model_patcher = comfy.sd.load_diffusion_model(unet_path, model_options={})
+model_patcher = comfy.sd.load_diffusion_model(unet_path, model_options=model_options)
 transformer = model_patcher.model.diffusion_model
 
 # Checkpoint (model+VAE+CLIP):
-model_patcher, clip, vae = comfy.sd.load_checkpoint_guess_config(ckpt_path)
+model_patcher, clip, vae = comfy.sd.load_checkpoint_guess_config(
+    ckpt_path, model_options=model_options)
 
 # Model stays on CPU after loading. Move to GPU explicitly before calibration:
 transformer.to("cuda")
@@ -684,9 +692,24 @@ for module in cm.modules:
 transformer.to("cpu")
 ```
 
-**Do NOT use `transformer.to("cuda", dtype=torch.bfloat16)`** — this casts ALL weights to BF16, but some models have layers that expect FP32 weights (e.g. `patch_embedding` Conv3d where `forward_orig` calls `.float()` on the input).
+**ALWAYS pass `model_options={"dtype": torch.bfloat16}`** when loading models for compilation. Without this, ComfyUI may load BF16 checkpoints as FP16, causing:
+- `Half and BFloat16` mismatch in LoRA MatMul (lora_packed is BF16, activations FP16)
+- `_to_copy` Cast nodes in ONNX from `comfy_cast_weights` runtime dtype conversion
 
 **Do NOT use `comfy.model_management.load_models_gpu()`** for compilation scripts — it may OOM on large models (14B+) and conflicts with the compile pipeline's memory management. Use explicit `.to("cuda")` / `.to("cpu")` instead.
+
+**Recommended `--weight-dtype` argument** for compile scripts:
+```python
+parser.add_argument("--weight-dtype", type=str, default="bf16",
+                    choices=["default", "bf16", "fp8_e4m3fn", "fp8_e5m2"])
+
+# In model loading:
+if args.weight_dtype == "bf16":
+    model_options["dtype"] = torch.bfloat16
+elif args.weight_dtype == "fp8_e4m3fn":
+    model_options["dtype"] = torch.float8_e4m3fn
+```
+Default should be `"bf16"`, not `"default"` — ensures correct dtype regardless of checkpoint format.
 
 ### 4.3 LoRA setup
 
