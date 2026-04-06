@@ -144,7 +144,7 @@ From the ComfyUI-Qlip directory (with the same venv activated):
 pip install -r custom_nodes/ComfyUI-Qlip/requirements.txt
 ```
 
-This installs `qlip.core[nvidia]` and `thestage-elastic-models[nvidia]` from the TheStage AI package registry.
+This installs `qlip.core[nvidia]` from the TheStage AI package registry.
 
 ### Step 3: Setup TheStage API token
 
@@ -154,6 +154,19 @@ Get your token at [app.thestage.ai](https://app.thestage.ai). Required for Qlip 
 pip install thestage
 thestage config set --access-token <YOUR_API_TOKEN>
 ```
+
+### (Optional) Download models
+
+If you don't have the required models yet, use the download scripts from [`scripts/`](scripts/):
+
+```bash
+export COMFYUI_PATH=/path/to/ComfyUI
+bash custom_nodes/ComfyUI-Qlip/scripts/download_z_image_turbo_models.sh
+bash custom_nodes/ComfyUI-Qlip/scripts/download_ltx_2_models.sh
+bash custom_nodes/ComfyUI-Qlip/scripts/download_flux_klein_models.sh
+```
+
+FLUX.2 Klein is a gated model — requires `huggingface-cli login` and license acceptance. HuggingFace cache defaults to `/workspace/cache` (override with `HF_HUB_CACHE`). Scripts skip already-downloaded files.
 
 ### Step 4: Launch ComfyUI
 

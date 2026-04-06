@@ -24,7 +24,7 @@ Read these pages when you need API details beyond what's in this skill:
 From the user:
 1. **ComfyUI workflow JSON** (expanded — all subgraphs unpacked so every node is visible)
 2. **Path to ComfyUI installation** (to read model source code and custom_nodes)
-3. **Model checkpoint path** (MUST be BF16/FP16 — not FP8. We handle quantization ourselves)
+3. **Model checkpoint path** (MUST be BF16/FP16 — **NEVER FP8**. Even if the workflow JSON references an FP8 checkpoint, you MUST find and download the BF16/FP16 version of the same model. We handle all quantization ourselves via ANNA/Qlip — starting from an already-quantized FP8 checkpoint would double-quantize and destroy quality.)
 4. **LoRA file path** (if LoRA support is needed)
 5. **Target GPU** and **target resolutions**
 6. **Server SSH access** (if remote compilation)
@@ -43,7 +43,9 @@ From the user:
 
 ### 1.1 Find the transformer architecture
 
-From the workflow JSON, identify the model loader node. Then read the model source code:
+From the workflow JSON, identify the model loader node. **If the workflow references an FP8 checkpoint** (e.g. `model_fp8_e4m3fn.safetensors`), find the BF16/FP16 version from the same HuggingFace repo. The download script and compile script must use BF16/FP16 — we quantize ourselves.
+
+Then read the model source code:
 - ComfyUI core models: `comfy/ldm/`
 - **Custom node models: `custom_nodes/`** — many models are NOT in ComfyUI core. The model class may live entirely inside a custom node package. Check the workflow JSON for non-standard node types and trace them to their `custom_nodes/` directory.
 
@@ -64,7 +66,58 @@ Read the block's forward method. Document:
 | **Fused weights** | `attention.qkv` vs separate `to_q/to_k/to_v`? |
 | **Non-tensor inputs** | Dataclasses, tuples with bools, Python objects? |
 
-### 1.3 Analyze the caller
+### 1.3 Compute seq_len formula
+
+**You MUST derive the correct `compute_seq_len(width, height, ...)` formula from the model source code.** Do NOT guess — read how the model converts pixel dimensions to token sequence length.
+
+The formula involves multiple compression stages:
+1. **VAE compression** — reduces spatial (÷8 typical) and temporal (÷4 for video) dimensions
+2. **Patch embedding** — further reduces by `patch_size` (e.g. `(1,2,2)` or `(2,2)`)
+3. **Additional tokens** — text tokens, image tokens (CLIP), reference tokens
+
+**How to derive:** Find `patch_embedding` in the model's `forward_orig`:
+```python
+# Example from Wan2.2:
+# forward_orig does: x = self.patch_embedding(x)  where x is [B, C, T, H, W] latent
+# patch_size = (1, 2, 2) — defined in model __init__
+# VAE compresses: temporal ÷4, spatial ÷8
+# So: latent shape = [B, C, frames//4, height//8, width//8]
+# After patch_embedding: tokens = (frames//4) * (height//8 // 2) * (width//8 // 2)
+```
+
+**Common mistake:** Using pixel `num_frames` directly instead of latent frames. Video VAEs compress temporally (typically ÷4):
+```python
+# WRONG:
+t = num_frames // patch_t  # 81 // 1 = 81
+
+# CORRECT:
+latent_t = (num_frames + 3) // 4  # VAE temporal compression: 81 → 21
+t = latent_t // patch_t            # 21 // 1 = 21
+```
+
+**Verification:** Run one calibration inference and check the log:
+```
+Add shape profile: {'x': ((2, 32760, 5120), ...)}
+```
+`32760` is the real seq_len. Verify: `21 * 52 * 30 = 32760` for 480x832, 81 frames. If your formula gives a different number, it's wrong.
+
+**Template function — adapt per model:**
+```python
+def compute_seq_len(width, height, num_frames=None, patch_size=(2, 2),
+                    vae_spatial=8, vae_temporal=4):
+    latent_h = height // vae_spatial
+    latent_w = width // vae_spatial
+    h = (latent_h + patch_size[-2] - 1) // patch_size[-2]
+    w = (latent_w + patch_size[-1] - 1) // patch_size[-1]
+    if num_frames is not None:
+        latent_t = (num_frames + vae_temporal - 1) // vae_temporal
+        patch_t = patch_size[0] if len(patch_size) == 3 else 1
+        t = (latent_t + patch_t - 1) // patch_t
+        return t * h * w
+    return h * w
+```
+
+### 1.4 Analyze the caller
 
 Find the function that calls block.forward() (usually `forward_orig` or `_forward`):
 - What does it pass to each block?
@@ -509,6 +562,7 @@ print(f"Max diff: {diff}")  # Should be < 0.01 for BF16
 | `from module import func` then patching module | Patch doesn't take effect | Also patch the local reference in importing module |
 | RoPE `_apply_rope1` type mismatch | `Float * BFloat16` error in TRT | Cast freqs_cis to x.dtype instead of x to freqs_cis.dtype (see RoPE section) |
 | `io_dtype_per_tensor` causing type mismatch | `ElementWiseOperation PROD must have same types` | Check if model casts PE to BF16 before blocks — if yes, do NOT set PE to FP32 |
+| Mixed FP32/BF16 inputs in STRONGLY_TYPED | `ElementWiseOperation SUM/PROD must have same input types (Half/BFloat16 and Float)` | See **io_dtype debugging** section below |
 
 ### 3.3 Dynamic axes — the most critical decision
 
@@ -593,7 +647,7 @@ Example: LTX-2 (video + audio processed separately).
 **Order is critical. Do not reorder.**
 
 ```
-1. Load model (ComfyUI API, BF16 weights)
+1. Load model (ComfyUI API, BF16/FP16 weights — NEVER FP8, even if workflow uses FP8)
 2. (Optional) Unfuse QKV / apply block patches
 3. Setup LoRA (if needed)
 4. Setup compiler (NvidiaCompileManager.setup_modules)
@@ -612,13 +666,27 @@ Example: LTX-2 (video + audio processed separately).
 
 ```python
 import comfy.sd
+import comfy.model_management
+
 # UNETLoader:
 model_patcher = comfy.sd.load_diffusion_model(unet_path, model_options={})
 transformer = model_patcher.model.diffusion_model
 
 # Checkpoint (model+VAE+CLIP):
 model_patcher, clip, vae = comfy.sd.load_checkpoint_guess_config(ckpt_path)
+
+# Model stays on CPU after loading. Move to GPU explicitly before calibration:
+transformer.to("cuda")
+for module in cm.modules:
+    if hasattr(module, "model"):
+        module.model.to("cuda")
+# Move back to CPU before compilation (cpu_offload compiles block-by-block):
+transformer.to("cpu")
 ```
+
+**Do NOT use `transformer.to("cuda", dtype=torch.bfloat16)`** — this casts ALL weights to BF16, but some models have layers that expect FP32 weights (e.g. `patch_embedding` Conv3d where `forward_orig` calls `.float()` on the input).
+
+**Do NOT use `comfy.model_management.load_models_gpu()`** for compilation scripts — it may OOM on large models (14B+) and conflicts with the compile pipeline's memory management. Use explicit `.to("cuda")` / `.to("cpu")` instead.
 
 ### 4.3 LoRA setup
 
@@ -749,15 +817,70 @@ Examples:
 - **Flux Klein**: `{"pe": "FP32"}` — PE stays FP32
 - **Z-Image-Turbo**: `{"freqs_cis": "FP32"}` — freqs_cis stays FP32
 - **LTX-2**: none — PE stacked into block input, no separate tensor
+- **Wan2.2**: `{"freqs": "FP32"}` — RoPE freqs stays FP32, but `e` (modulation) is NOT FP32 (see below)
+
+### io_dtype debugging: `ElementWiseOperation must have same input types`
+
+This error appears when STRONGLY_TYPED mode (forced by WEIGHT_STREAMING) encounters mixed-dtype elementwise ops in the ONNX graph.
+
+**How to diagnose:**
+
+1. Read block.forward() and trace every input tensor through the computation
+2. For each input, determine: does it stay in its original dtype, or does the block cast it?
+3. The rule: **`io_dtype_per_tensor` must match what the ONNX graph expects, NOT what the caller sends**
+
+**The key question for each input:** Does the block USE it in its original dtype, or does it CAST it first?
+
+| Input arrives as | Block does | io_dtype_per_tensor | Why |
+|---|---|---|---|
+| FP32 | Uses directly with BF16 data (`e + x`) | Do NOT set FP32 — let engine cast to BF16 | Block mixes it with BF16 → ONNX graph has BF16 ops |
+| FP32 | Casts internally (`freqs.to(x.dtype)`) | Set `"FP32"` | ONNX graph has explicit Cast node, TRT handles it |
+| FP32 | Uses only with other FP32 tensors | Set `"FP32"` | No dtype conflict |
+| BF16 | Uses directly | Default (no override needed) | Already matches |
+
+**Common mistake:** Setting `io_dtype_per_tensor={"e": "FP32"}` because `e` arrives as FP32 from the caller. But if the block does `modulation.to(x.dtype) + e` (Wan2.2 pattern), the ONNX graph contains a BF16 Add — the FP32 `e` gets promoted to BF16 during tracing. Declaring it FP32 in io_dtype forces TRT to keep it FP32 → mismatch with the BF16 Add node.
+
+**Correct approach for Wan2.2 Animate:**
+```python
+nvidia_config = NvidiaBuilderConfig(
+    builder_flags=builder_flags,
+    io_dtype="base",                           # all inputs default to model dtype (BF16)
+    io_dtype_per_tensor={"freqs": "FP32"},     # only freqs stays FP32 (apply_rope1 casts internally)
+    # e is NOT FP32 — block does cast_to(modulation, x.dtype) + e → all BF16 in ONNX
+)
+```
+
+**Step-by-step debugging process:**
+
+1. First try `io_dtype="base"` with NO `io_dtype_per_tensor` overrides
+2. If compilation succeeds → done
+3. If `ElementWiseOperation must have same types` error → identify which node fails (e.g. `node_mul_2`)
+4. Read block.forward() to find which input is involved in that operation
+5. Check: does the block cast that input before using it with other tensors?
+   - YES (e.g. `apply_rope1` casts freqs) → add `{"input_name": "FP32"}` to keep it FP32, the Cast node in ONNX handles conversion
+   - NO (e.g. `modulation + e` without explicit cast) → do NOT override, let `"base"` cast it to BF16 at engine boundary
 
 ### 4.5 Calibration & shape profiles
 
+**Shape collection** runs inference to record tensor shapes for TRT optimization profiles. Run it for **every target resolution** — TRT optimizes kernel selection per profile.
+
 ```python
+# 1. Enable shape collection
 for module in cm.modules:
     module._collect_shapes = True
-run_calibration_inference(model_patcher, clip, prompt, width, height, steps=2)
+
+# 2. Run calibration for ONE size (smallest — saves memory)
+#    Shape collection captures tensor names, batch dims, hidden dims etc.
+#    The actual seq_len ranges come from set_axes_profiles, NOT from collected shapes.
+calib_w, calib_h = min(parsed_sizes, key=lambda s: s[0] * s[1])
+run_calibration_inference(model_patcher, clip, prompt, calib_w, calib_h, steps=2)
+
+# 3. CRITICAL: set_axes_profiles and _collect_shapes=False in ONE loop per module.
+#    Do NOT disable collection in a separate loop before setting profiles —
+#    qlip will use collected shapes and ignore your profiles.
 for module in cm.modules:
     module._collect_shapes = False
+    module.ioconfig.set_axes_profiles(dynamic_axes, profiles)
 ```
 
 **Dynamic axes — only include tensor args that survive calibration:**
@@ -771,7 +894,123 @@ dynamic_axes = {
 
 Check the log after calibration: `Prepare export with inputs: [...]` — only those names belong in dynamic_axes.
 
-### 4.6 Calibration pitfalls
+**Shape profiles — MUST have real variation:**
+
+Always provide **multiple resolutions** (`--sizes`) AND a **dynamic range** (`--dynamic-size-range`). A single resolution produces identical min/opt/max profiles — TRT cannot handle any other seq_len at runtime.
+
+```bash
+# BAD — single resolution, no dynamic range:
+--sizes 480x832
+# Result: static profile seq_len=32760, dynamic profile seq_len=32760 (same!)
+
+# GOOD — multiple resolutions + dynamic range:
+--sizes 480x832 480x480 832x480
+--dynamic-size-range 320 480 832
+# Result: 3 static profiles + 1 dynamic profile covering 320→832 range
+```
+
+**Profile construction pattern:**
+```python
+profiles = []
+
+# Static profiles: one per target resolution (best perf at exact size)
+for size in target_sizes:
+    seq = compute_seq_len(size)
+    profiles.append({"min": {"seq_len": seq}, "opt": {"seq_len": seq}, "max": {"seq_len": seq}})
+
+# MANDATORY: dynamic range profile (handles arbitrary sizes within range)
+profiles.append({
+    "min": {"seq_len": min_seq},    # smallest supported
+    "opt": {"seq_len": opt_seq},    # most common
+    "max": {"seq_len": max_seq},    # largest supported
+})
+```
+
+**Without the dynamic range profile**, the engine can ONLY run at the exact static profile sizes. Any other resolution → TRT error `dimensions not in any optimization profile`.
+
+**FP8 calibration** is separate from shape collection and needs more iterations with diverse prompts:
+```python
+# FP8 calibration: N iterations, varied prompts, varied resolutions
+from datasets import load_dataset
+dataset = load_dataset("Gustavosta/Stable-Diffusion-Prompts", split="train")
+for idx in range(calibration_iterations):  # default 10
+    w, h = sizes[idx % len(sizes)]
+    prompt = dataset[idx]["Prompt"]
+    run_calibration_inference(model_patcher, clip, prompt, w, h, steps=2)
+```
+
+2 steps with 1 prompt is NOT enough for FP8 — activation ranges vary significantly across prompts. Use at least 10 iterations with different prompts from the dataset.
+
+### 4.6 Calibration inference template
+
+**Use this template for `run_calibration_inference`.** Uses `comfy.sample.sample()` — the same code path as ComfyUI's KSampler node. Do NOT use `CFGGuider` + `KSampler` manually — the API is fragile and changes between versions.
+
+```python
+def run_calibration_inference(model_patcher, clip, prompt, width, height,
+                              steps=2, cfg=4.0, num_frames=None, seed=42):
+    """Run short inference to collect shapes for TRT profiles.
+
+    Works for both image and video models.
+    """
+    import comfy.sample
+    import comfy.model_management
+
+    # --- Conditioning ---
+    # encode_from_tokens_scheduled returns a SINGLE value (list), NOT a tuple.
+    # Do NOT unpack as (cond, _) — it's one return value.
+    tokens_pos = clip.tokenize(prompt)
+    conditioning_pos = clip.encode_from_tokens_scheduled(tokens_pos)
+    tokens_neg = clip.tokenize("")
+    conditioning_neg = clip.encode_from_tokens_scheduled(tokens_neg)
+
+    # --- Latent ---
+    # Image model: [batch, 4, height//8, width//8]
+    # Video model: [batch, 16, frames//4, height//8, width//8]
+    latent_h = height // 8
+    latent_w = width // 8
+    if num_frames is not None:
+        latent_frames = (num_frames + 3) // 4
+        latent_image = torch.zeros(1, 16, latent_frames, latent_h, latent_w,
+                                   device="cuda")
+    else:
+        latent_image = torch.zeros(1, 4, latent_h, latent_w,
+                                   device="cuda")
+
+    # fix_empty_latent_channels adjusts channels to match model
+    latent_image = comfy.sample.fix_empty_latent_channels(
+        model_patcher, latent_image,
+    ).to("cuda")
+
+    noise = comfy.sample.prepare_noise(latent_image, seed)
+
+    # comfy.sample.sample handles model GPU loading internally.
+    # Do NOT call load_models_gpu separately — may OOM on large models (14B+).
+
+    # --- Sample using ComfyUI's standard path ---
+    _ = comfy.sample.sample(
+        model_patcher,
+        noise,
+        steps,
+        cfg,
+        "euler",       # sampler
+        "normal",      # scheduler
+        conditioning_pos,
+        conditioning_neg,
+        latent_image,
+        denoise=1.0,
+        disable_noise=False,
+        seed=seed,
+    )
+```
+
+**Common mistakes to avoid:**
+- `clip.encode_from_tokens_scheduled()` returns **one value** (list), NOT a tuple. Do NOT write `cond, _ = clip.encode_from_tokens_scheduled(...)`.
+- Do NOT use `comfy.samplers.KSampler("euler", {}, device="cuda")` directly — `KSampler.__init__` expects a model object, not a string. Use `comfy.sample.sample()` instead.
+- Do NOT use `comfy.samplers.CFGGuider` + `guider.sample()` — use `comfy.sample.sample()` which handles CFG internally.
+- For video models, latent channels are typically 16 (not 4) and shape includes temporal dimension.
+- Always call `comfy.sample.fix_empty_latent_channels()` to auto-adjust channels for the model.
+
+### 4.7 Calibration pitfalls
 
 **Conditioning tensor dimensions**: ComfyUI's CLIP encode may return 2D tensors `(seq, dim)` without batch dimension. The model expects 3D `(batch, seq, dim)`. Always check and add batch dim if needed:
 ```python
@@ -1042,6 +1281,17 @@ QlipLoraModule.setup(dm, ...)
 
 ## Model Download Script Pattern
 
+**CRITICAL: Always download the BF16/FP16 version of the model checkpoint, regardless of what the workflow JSON uses.** Many workflows reference FP8 checkpoints for memory savings during eager inference — but for Qlip compilation we MUST start from full-precision weights. The download script should fetch BF16/FP16 as the primary model. FP8 versions can optionally be downloaded for reference/eager inference, but the compile scripts must always point to BF16/FP16.
+
+**Ask the user for exact download URLs.** Do NOT guess HuggingFace URLs — repos have different naming conventions, subdirectories, and organizations. The user knows where the correct BF16/FP16 checkpoint lives. Ask them to provide:
+- Diffusion model URL (BF16/FP16)
+- Text encoder URL
+- CLIP Vision URL (if I2V model)
+- VAE URL
+- LoRA URLs (if needed)
+
+Example prompt to user: "Please provide the HuggingFace download URLs for each component (model BF16, text encoder, VAE, LoRAs). I'll create the download script."
+
 Create only if models are on HuggingFace. All repos/files as configurable variables:
 
 ```bash
@@ -1067,22 +1317,44 @@ download_hf "$LORA_REPO" "$LORA_FILE" "$COMFYUI_PATH/models/loras"
 
 ## Bash Compilation Wrapper Pattern
 
+**CRITICAL: The MODEL variable must ALWAYS point to a BF16/FP16 checkpoint, never FP8.** We compile from full-precision and handle quantization ourselves via `--quantize`. Even if the workflow uses an FP8 model, the compile script must reference the BF16/FP16 version.
+
+Compile **all variants** in one script — BF16 first (lossless baseline), then FP8 (quantized by Qlip):
+
 ```bash
 #!/bin/bash
+# Compile all variants: BF16, BF16+LoRA, FP8, FP8+LoRA
+# IMPORTANT: MODEL must be BF16/FP16 — we quantize ourselves via --quantize
 set -e
+
 COMFYUI_PATH="${COMFYUI_PATH:-./ComfyUI}"
+MODEL="model_bf16.safetensors"  # ALWAYS BF16/FP16, never FP8
 LORA_PATH="${LORA_PATH:-$COMFYUI_PATH/models/loras/lora.safetensors}"
 LORA_RANK="--min-lora-rank 1 --opt-lora-rank 32 --max-lora-rank 128"
 SIZES="--sizes 1024x1024 1024x768"
 DYNAMIC="--dynamic-size-range 512 768 1024"
+COMMON="--comfyui-path $COMFYUI_PATH --model $MODEL $SIZES $DYNAMIC"
 FP8="--quantize --static --calibration-iterations 10 --skip-first-blocks 1 --skip-last-blocks 1"
-COMMON="--comfyui-path $COMFYUI_PATH $SIZES $DYNAMIC"
 
-# BF16 + LoRA
-python compile_model.py --model model.safetensors --engines-dir ./engines/bf16-lora \
+echo "============================================================"
+echo "Compiling model variants"
+echo "  Model:   $MODEL (BF16 — Qlip handles quantization)"
+echo "  ComfyUI: $COMFYUI_PATH"
+echo "============================================================"
+
+# --- BF16 (lossless) ---
+echo "=== BF16 ==="
+python compile_model.py --engines-dir ./engines/bf16 $COMMON
+
+echo "=== BF16 + LoRA ==="
+python compile_model.py --engines-dir ./engines/bf16-lora \
   $COMMON --lora "$LORA_PATH" $LORA_RANK
 
-# FP8 + LoRA
-python compile_model.py --model model.safetensors --engines-dir ./engines/fp8-lora \
+# --- FP8 (quantized by Qlip from BF16 weights) ---
+echo "=== FP8 ==="
+python compile_model.py --engines-dir ./engines/fp8 $COMMON $FP8
+
+echo "=== FP8 + LoRA ==="
+python compile_model.py --engines-dir ./engines/fp8-lora \
   $COMMON $FP8 --lora "$LORA_PATH" $LORA_RANK
 ```
