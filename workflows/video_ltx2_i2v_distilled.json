@@ -2529,7 +2529,7 @@
         "Node name for S&R": "QlipLoraStack"
       },
       "widgets_values": [
-        "",
+        "/path/to/lora.safetensors",
         1
       ]
     },

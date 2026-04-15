@@ -1281,18 +1281,81 @@ if is_my_model(dm):
     patch_my_model_caller(dm)
 ```
 
-### 7.3 Execution order in engine_loader.py
+### 7.3 Custom patch file (`qlip_patch.py`)
+
+Instead of adding patches to `utils/helpers.py` and `engine_loader.py`, you can place a `qlip_patch.py` file in the engines directory. It is auto-loaded by `QlipEnginesLoader` at runtime.
+
+**File location:**
+```
+engines/my-model/
+  block_0.qlip
+  block_1.qlip
+  lora_config.json          # optional
+  qlip_patch.py             # optional — auto-loaded
+```
+
+**Contract — two hook functions, both optional:**
+```python
+"""qlip_patch.py — custom patches for my-model engines."""
+import torch
+
+
+def patch_signatures(dm):
+    """Called BEFORE auto_setup().
+    Fix block.model.forward signatures so engine input names match.
+
+    Args:
+        dm: diffusion_model (transformer)
+    """
+    import inspect
+    sig = inspect.Signature([
+        inspect.Parameter("joint_hidden_states", inspect.Parameter.POSITIONAL_OR_KEYWORD),
+        inspect.Parameter("temb", inspect.Parameter.POSITIONAL_OR_KEYWORD),
+        inspect.Parameter("image_rotary_emb", inspect.Parameter.POSITIONAL_OR_KEYWORD),
+    ])
+    for block in dm.transformer_blocks:
+        target = block.model if hasattr(block, "model") else block
+        orig_fwd = target.forward
+        def _make_wrapper(orig):
+            def wrapper(joint_hidden_states, temb, image_rotary_emb):
+                return orig(joint_hidden_states, temb, image_rotary_emb)
+            wrapper.__signature__ = sig
+            return wrapper
+        target.forward = _make_wrapper(orig_fwd)
+
+
+def patch_caller(dm):
+    """Called AFTER engine loading.
+    Modify transformer.forward_orig to prepare inputs for compiled blocks.
+
+    Args:
+        dm: diffusion_model (transformer)
+    """
+    orig_forward = dm.forward_orig
+    def patched_forward(x, timesteps, context, **kwargs):
+        dm._cached_emb = dm.time_embed(timesteps)
+        return orig_forward(x, timesteps, context, **kwargs)
+    dm.forward_orig = patched_forward
+```
+
+This approach is preferred for new models — no need to modify ComfyUI-Qlip source code. The patch file ships with the engines.
+
+You can still add patches to `utils/helpers.py` + `engine_loader.py` for built-in models. Custom patches from `qlip_patch.py` run **after** built-in patches.
+
+### 7.4 Execution order in engine_loader.py
 
 ```python
 # 1. Signature patches — BEFORE auto_setup
-self._apply_signature_patches(dm)
+#    Built-in patches run first, then qlip_patch.patch_signatures(dm)
+self._apply_signature_patches(dm, engines_dir)
 
 # 2. Load engines — auto_setup reads patched signatures
 imanager = NvidiaInferenceManager(model=dm, workspace=engines_dir)
 imanager.auto_setup()
 
 # 3. Caller patches — AFTER auto_setup
-self._apply_caller_patches(dm)
+#    Built-in patches run first, then qlip_patch.patch_caller(dm)
+self._apply_caller_patches(dm, engines_dir)
 
 # 4. LoRA wrapper — AFTER caller patches
 QlipLoraModule.setup(dm, ...)
