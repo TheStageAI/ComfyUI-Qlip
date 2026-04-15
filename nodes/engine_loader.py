@@ -626,11 +626,7 @@ class QlipEnginesLoader:
         custom_present = _has_custom_patch(engines_dir, "patch_signatures")
 
         if not custom_present:
-            # Qwen Image Edit — block signature was restructured at compile time
-            from ..utils import is_qwen_image_model
-            if is_qwen_image_model(dm):
-                from ..utils import patch_qwen_image_block_signature
-                patch_qwen_image_block_signature(dm)
+            pass
 
         # Custom patch from engines directory
         if engines_dir:
@@ -666,16 +662,16 @@ class QlipEnginesLoader:
                 patch_process_transformer_blocks(dm)
 
             # # Z-Image-Turbo / Lumina2 NextDiT — force fixed cap_feats length
-            # from ..utils import is_zimage_lumina_model, patch_zimage_fixed_cap_len
-            # if is_zimage_lumina_model(dm):
-            #     # Engines are compiled with cap_feats=64. Force runtime to match.
-            #     patch_zimage_fixed_cap_len(dm, fixed_cap_len=64)
-
-            # Qwen Image Edit — concat txt+img into joint_hidden_states caller patch
-            from ..utils import is_qwen_image_model
-            if is_qwen_image_model(dm):
-                from ..utils import patch_qwen_image_caller
-                patch_qwen_image_caller(dm, fixed_txt_len=1536)
+            from ..utils import is_zimage_lumina_model, patch_zimage_fixed_cap_len
+            if is_zimage_lumina_model(dm):
+                # Engines are compiled with cap_feats=64. Force runtime to match.
+                patch_zimage_fixed_cap_len(dm, fixed_cap_len=64)
+            #
+            # # Qwen Image Edit — concat txt+img into joint_hidden_states caller patch
+            # from ..utils import is_qwen_image_model
+            # if is_qwen_image_model(dm):
+            #     from ..utils import patch_qwen_image_caller
+            #     patch_qwen_image_caller(dm, fixed_txt_len=1536)
 
         # Custom patch from engines directory
         if engines_dir:

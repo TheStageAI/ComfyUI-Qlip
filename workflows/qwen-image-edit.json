@@ -2,7 +2,7 @@
   "id": "91f6bbe2-ed41-4fd6-bac7-71d5b5864ecb",
   "revision": 0,
   "last_node_id": 137,
-  "last_link_id": 249,
+  "last_link_id": 252,
   "nodes": [
     {
       "id": 112,
@@ -122,57 +122,6 @@
       "bgcolor": "#335"
     },
     {
-      "id": 114,
-      "type": "CFGNorm",
-      "pos": [
-        860,
-        -45
-      ],
-      "size": [
-        290,
-        60
-      ],
-      "flags": {},
-      "order": 24,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "model",
-          "type": "MODEL",
-          "link": 215
-        }
-      ],
-      "outputs": [
-        {
-          "name": "patched_model",
-          "type": "MODEL",
-          "links": [
-            221
-          ]
-        }
-      ],
-      "properties": {
-        "Node name for S&R": "CFGNorm",
-        "enableTabs": false,
-        "tabWidth": 65,
-        "tabXOffset": 10,
-        "hasSecondTab": false,
-        "secondTabText": "Send Back",
-        "secondTabOffset": 80,
-        "secondTabWidth": 65,
-        "cnr_id": "comfy-core",
-        "ver": "0.3.50",
-        "ue_properties": {
-          "widget_ue_connectable": {
-            "strength": true
-          }
-        }
-      },
-      "widgets_values": [
-        1
-      ]
-    },
-    {
       "id": 115,
       "type": "ModelSamplingAuraFlow",
       "pos": [
@@ -184,7 +133,7 @@
         60
       ],
       "flags": {},
-      "order": 23,
+      "order": 22,
       "mode": 0,
       "inputs": [
         {
@@ -302,7 +251,7 @@
           "name": "LATENT",
           "type": "LATENT",
           "links": [
-            245
+            250
           ]
         }
       ],
@@ -645,7 +594,7 @@
         78
       ],
       "flags": {},
-      "order": 22,
+      "order": 21,
       "mode": 0,
       "inputs": [
         {
@@ -826,71 +775,6 @@
       ]
     },
     {
-      "id": 118,
-      "type": "TextEncodeQwenImageEdit",
-      "pos": [
-        -659.3035515897277,
-        -148.44065228621352
-      ],
-      "size": [
-        360,
-        150
-      ],
-      "flags": {},
-      "order": 16,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "clip",
-          "type": "CLIP",
-          "link": 219
-        },
-        {
-          "name": "vae",
-          "shape": 7,
-          "type": "VAE",
-          "link": 220
-        },
-        {
-          "name": "image",
-          "shape": 7,
-          "type": "IMAGE",
-          "link": 228
-        }
-      ],
-      "outputs": [
-        {
-          "name": "CONDITIONING",
-          "type": "CONDITIONING",
-          "links": [
-            222
-          ]
-        }
-      ],
-      "properties": {
-        "Node name for S&R": "TextEncodeQwenImageEdit",
-        "enableTabs": false,
-        "tabWidth": 65,
-        "tabXOffset": 10,
-        "hasSecondTab": false,
-        "secondTabText": "Send Back",
-        "secondTabOffset": 80,
-        "secondTabWidth": 65,
-        "cnr_id": "comfy-core",
-        "ver": "0.3.50",
-        "ue_properties": {
-          "widget_ue_connectable": {
-            "prompt": true
-          }
-        }
-      },
-      "widgets_values": [
-        "Remove all UI text elements from the image. Keep the feeling that the characters and scene are in water. Also, remove the green UI elements at the bottom."
-      ],
-      "color": "#232",
-      "bgcolor": "#353"
-    },
-    {
       "id": 93,
       "type": "ImageScaleToTotalPixels",
       "pos": [
@@ -1009,105 +893,6 @@
       ]
     },
     {
-      "id": 121,
-      "type": "LoraLoaderModelOnly",
-      "pos": [
-        -106.10148557522864,
-        -33.934855857287914
-      ],
-      "size": [
-        306.0875618989678,
-        94.74610723723299
-      ],
-      "flags": {},
-      "order": 21,
-      "mode": 4,
-      "inputs": [
-        {
-          "name": "model",
-          "type": "MODEL",
-          "link": 244
-        }
-      ],
-      "outputs": [
-        {
-          "name": "MODEL",
-          "type": "MODEL",
-          "links": [
-            230
-          ]
-        }
-      ],
-      "properties": {
-        "Node name for S&R": "LoraLoaderModelOnly",
-        "enableTabs": false,
-        "tabWidth": 65,
-        "tabXOffset": 10,
-        "hasSecondTab": false,
-        "secondTabText": "Send Back",
-        "secondTabOffset": 80,
-        "secondTabWidth": 65,
-        "cnr_id": "comfy-core",
-        "ver": "0.3.50",
-        "models": [
-          {
-            "name": "Qwen-Image-Edit-Lightning-4steps-V1.0-bf16.safetensors",
-            "url": "https://huggingface.co/lightx2v/Qwen-Image-Lightning/resolve/main/Qwen-Image-Edit-Lightning-4steps-V1.0-bf16.safetensors",
-            "directory": "loras"
-          }
-        ],
-        "ue_properties": {
-          "widget_ue_connectable": {
-            "lora_name": true,
-            "strength_model": true
-          }
-        }
-      },
-      "widgets_values": [
-        "Qwen-Image-Edit-Lightning-4steps-V1.0.safetensors",
-        1
-      ]
-    },
-    {
-      "id": 133,
-      "type": "QlipLoraStack",
-      "pos": [
-        -686.6194717728029,
-        -734.8611657256614
-      ],
-      "size": [
-        270,
-        82
-      ],
-      "flags": {},
-      "order": 12,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "prev_stack",
-          "shape": 7,
-          "type": "QLIP_LORA_STACK",
-          "link": null
-        }
-      ],
-      "outputs": [
-        {
-          "name": "lora_stack",
-          "type": "QLIP_LORA_STACK",
-          "links": [
-            242
-          ]
-        }
-      ],
-      "properties": {
-        "Node name for S&R": "QlipLoraStack"
-      },
-      "widgets_values": [
-        "/path-to/Qwen-Image-Edit-Lightning-4steps-V1.0-bf16.safetensors",
-        1
-      ]
-    },
-    {
       "id": 60,
       "type": "SaveImage",
       "pos": [
@@ -1147,44 +932,6 @@
       ]
     },
     {
-      "id": 134,
-      "type": "QlipTimerStart",
-      "pos": [
-        685.7260480369463,
-        -513.179041508687
-      ],
-      "size": [
-        270,
-        82
-      ],
-      "flags": {},
-      "order": 20,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "passthrough",
-          "type": "*",
-          "link": 245
-        }
-      ],
-      "outputs": [
-        {
-          "name": "passthrough",
-          "type": "*",
-          "links": [
-            246
-          ]
-        }
-      ],
-      "properties": {
-        "Node name for S&R": "QlipTimerStart"
-      },
-      "widgets_values": [
-        "sampler",
-        true
-      ]
-    },
-    {
       "id": 128,
       "type": "KSampler",
       "pos": [
@@ -1202,7 +949,7 @@
         {
           "name": "model",
           "type": "MODEL",
-          "link": 221
+          "link": 252
         },
         {
           "name": "positive",
@@ -1217,7 +964,7 @@
         {
           "name": "latent_image",
           "type": "LATENT",
-          "link": 246
+          "link": 250
         },
         {
           "name": "steps",
@@ -1260,7 +1007,7 @@
         "widget_ue_connectable": {}
       },
       "widgets_values": [
-        344147753686358,
+        1066190883551462,
         "randomize",
         4,
         1,
@@ -1392,6 +1139,220 @@
       "widgets_values": []
     },
     {
+      "id": 121,
+      "type": "LoraLoaderModelOnly",
+      "pos": [
+        -106.10148557522864,
+        -33.934855857287914
+      ],
+      "size": [
+        306.0875618989678,
+        94.74610723723299
+      ],
+      "flags": {},
+      "order": 20,
+      "mode": 4,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 244
+        }
+      ],
+      "outputs": [
+        {
+          "name": "MODEL",
+          "type": "MODEL",
+          "links": [
+            230
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoraLoaderModelOnly",
+        "enableTabs": false,
+        "tabWidth": 65,
+        "tabXOffset": 10,
+        "hasSecondTab": false,
+        "secondTabText": "Send Back",
+        "secondTabOffset": 80,
+        "secondTabWidth": 65,
+        "cnr_id": "comfy-core",
+        "ver": "0.3.50",
+        "models": [
+          {
+            "name": "Qwen-Image-Edit-Lightning-4steps-V1.0-bf16.safetensors",
+            "url": "https://huggingface.co/lightx2v/Qwen-Image-Lightning/resolve/main/Qwen-Image-Edit-Lightning-4steps-V1.0-bf16.safetensors",
+            "directory": "loras"
+          }
+        ],
+        "ue_properties": {
+          "widget_ue_connectable": {
+            "lora_name": true,
+            "strength_model": true
+          }
+        }
+      },
+      "widgets_values": [
+        "Qwen-Image-Edit-Lightning-4steps-V1.0.safetensors",
+        1
+      ]
+    },
+    {
+      "id": 114,
+      "type": "CFGNorm",
+      "pos": [
+        860,
+        -45
+      ],
+      "size": [
+        290,
+        60
+      ],
+      "flags": {},
+      "order": 23,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 215
+        }
+      ],
+      "outputs": [
+        {
+          "name": "patched_model",
+          "type": "MODEL",
+          "links": [
+            251
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "CFGNorm",
+        "enableTabs": false,
+        "tabWidth": 65,
+        "tabXOffset": 10,
+        "hasSecondTab": false,
+        "secondTabText": "Send Back",
+        "secondTabOffset": 80,
+        "secondTabWidth": 65,
+        "cnr_id": "comfy-core",
+        "ver": "0.3.50",
+        "ue_properties": {
+          "widget_ue_connectable": {
+            "strength": true
+          }
+        }
+      },
+      "widgets_values": [
+        1
+      ]
+    },
+    {
+      "id": 134,
+      "type": "QlipTimerStart",
+      "pos": [
+        1131.0316401644727,
+        -266.90949195953215
+      ],
+      "size": [
+        270,
+        82
+      ],
+      "flags": {},
+      "order": 24,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "passthrough",
+          "type": "*",
+          "link": 251
+        }
+      ],
+      "outputs": [
+        {
+          "name": "passthrough",
+          "type": "*",
+          "links": [
+            252
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "QlipTimerStart"
+      },
+      "widgets_values": [
+        "sampler",
+        true
+      ]
+    },
+    {
+      "id": 118,
+      "type": "TextEncodeQwenImageEdit",
+      "pos": [
+        -659.3035515897277,
+        -148.44065228621352
+      ],
+      "size": [
+        360,
+        150
+      ],
+      "flags": {},
+      "order": 16,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "link": 219
+        },
+        {
+          "name": "vae",
+          "shape": 7,
+          "type": "VAE",
+          "link": 220
+        },
+        {
+          "name": "image",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": 228
+        }
+      ],
+      "outputs": [
+        {
+          "name": "CONDITIONING",
+          "type": "CONDITIONING",
+          "links": [
+            222
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "TextEncodeQwenImageEdit",
+        "enableTabs": false,
+        "tabWidth": 65,
+        "tabXOffset": 10,
+        "hasSecondTab": false,
+        "secondTabText": "Send Back",
+        "secondTabOffset": 80,
+        "secondTabWidth": 65,
+        "cnr_id": "comfy-core",
+        "ver": "0.3.50",
+        "ue_properties": {
+          "widget_ue_connectable": {
+            "prompt": true
+          }
+        }
+      },
+      "widgets_values": [
+        "Remove all UI text elements from the image. Keep the feeling that the characters and scene are in water. Also, remove the green UI elements at the bottom."
+      ],
+      "color": "#232",
+      "bgcolor": "#353"
+    },
+    {
       "id": 132,
       "type": "QlipEnginesLoader",
       "pos": [
@@ -1435,6 +1396,45 @@
         "TheStageAI/Elastic-Qwen-Image-Edit:models/H100/qwen-image-edit-bf16_lora",
         false,
         ""
+      ]
+    },
+    {
+      "id": 133,
+      "type": "QlipLoraStack",
+      "pos": [
+        -686.6194717728029,
+        -734.8611657256614
+      ],
+      "size": [
+        270,
+        82
+      ],
+      "flags": {},
+      "order": 12,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "prev_stack",
+          "shape": 7,
+          "type": "QLIP_LORA_STACK",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "lora_stack",
+          "type": "QLIP_LORA_STACK",
+          "links": [
+            242
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "QlipLoraStack"
+      },
+      "widgets_values": [
+        "/path-to/Qwen-Image-Edit-Lightning-4steps-V1.0-bf16.safetensors",
+        1
       ]
     }
   ],
@@ -1502,14 +1502,6 @@
       118,
       1,
       "VAE"
-    ],
-    [
-      221,
-      114,
-      0,
-      128,
-      0,
-      "MODEL"
     ],
     [
       222,
@@ -1680,22 +1672,6 @@
       "MODEL"
     ],
     [
-      245,
-      119,
-      0,
-      134,
-      0,
-      "LATENT"
-    ],
-    [
-      246,
-      134,
-      0,
-      128,
-      3,
-      "LATENT"
-    ],
-    [
       247,
       128,
       0,
@@ -1718,6 +1694,30 @@
       137,
       0,
       "IMAGE"
+    ],
+    [
+      250,
+      119,
+      0,
+      128,
+      3,
+      "LATENT"
+    ],
+    [
+      251,
+      114,
+      0,
+      134,
+      0,
+      "MODEL"
+    ],
+    [
+      252,
+      134,
+      0,
+      128,
+      0,
+      "MODEL"
     ]
   ],
   "groups": [
@@ -1792,8 +1792,8 @@
     "ds": {
       "scale": 0.4446823366936072,
       "offset": [
-        1980.9510850533466,
-        1628.6435041589534
+        2244.4906875510887,
+        1463.4623873505882
       ]
     },
     "frontendVersion": "1.42.8",

@@ -86,17 +86,6 @@ Image generation model. Compiled with cfg=1.0, batch=1, static sizes only.
 |-----|-------|-------------|
 | 1.0 (turbo) | 1 | 1024x1024, 1024x768, 768x1024 |
 
-> **Prompt length requirement.** The compiled engines expect the caption embedding to be padded to a fixed length (`cap_feats_len = 64` tokens). Z-Image-Turbo (Lumina2) pads `cap_feats` up to the next multiple of `pad_tokens_multiple = 32`, so:
-> - prompts that yield ≤ 32 caption tokens → padded to **32** → fails with `Invalid input shape: no matching optimization profile`
-> - prompts that yield 33–64 caption tokens → padded to **64** → matches the engine ✓
->
-> Always use **a sufficiently long prompt** (roughly **a full sentence with 20+ words**, or any prompt that produces > 32 tokens after the Qwen tokenizer). Short prompts like `"a cat"` will not work.
->
-> Example of a good prompt:
-> ```
-> "Pixel art style. Latina female with thick wavy hair, harbor boats and pastel houses behind. Breezy seaside light, warm tones, cinematic close-up."
-> ```
-
 #### LTX-Video 2.3 (22B)
 
 Text-to-video model. 22B full-scale (non-distilled) LTXAV architecture with audio+video dual-stream attention. Compiled as t2v (text-to-video) with fixed batch=2.

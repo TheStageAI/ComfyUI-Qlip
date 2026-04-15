@@ -727,7 +727,9 @@ def patch_zimage_fixed_cap_len(transformer, fixed_cap_len: int = 64):
             # Truncate (rare — would need a very long prompt)
             cf_new = cf[:, :fixed_cap_len, :]
 
-        # Recompute cap_pos_ids with the new length so freqs_cis matches
+        # Recompute cap_pos_ids and freqs_cis for the new cap length.
+        # freqs_cis from embed_cap is a tuple (from rope_embedder).
+        # We must preserve its type — embed_all does `freqs_cis += (None,)`.
         cap_pos_ids = torch.zeros(
             cf_new.shape[0], cf_new.shape[1], 3,
             dtype=torch.float32, device=cf_new.device,
@@ -738,9 +740,12 @@ def patch_zimage_fixed_cap_len(transformer, fixed_cap_len: int = 64):
             + 1.0 + offset
         )
 
-        # Recompute freqs_cis for the new cap length using the model's rope
         if hasattr(transformer, "rope_embedder"):
-            freqs_cis = transformer.rope_embedder(cap_pos_ids)
+            # Original embed_cap returns freqs_cis as a single-element tuple:
+            #   (rope_embedder(cap_pos_ids).movedim(1, 2),)
+            # embed_all then does `freqs_cis += (None,)` — tuple concat.
+            # Must preserve this exact format.
+            freqs_cis = (transformer.rope_embedder(cap_pos_ids).movedim(1, 2),)
 
         embeds_new = (cf_new,) + tuple(embeds[1:])
         return embeds_new, freqs_cis, cap_feats_len
