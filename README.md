@@ -10,6 +10,15 @@ Qlip compiles transformer blocks into optimized engines, delivering significant 
   <em>FLUX.2 Klein 9B with LoRA in ComfyUI. Just add the Qlip Engines Loader and Qlip LoRA Stack nodes to any existing workflow — works with any supported model and any sampler, as long as the compiled engines support the required input shapes.</em>
 </p>
 
+## Updates
+
+**2026-04-15** — Wan 2.2 I2V + shared memory + runtime patches + API client
+- **Wan 2.2 I2V (14B)** — image-to-video, FP8 + LoRA, two-stage pipeline (high-noise + low-noise), dynamic shapes up to 640x640
+- **Shared memory** — new `shared_memory` parameter in QlipEnginesLoader. Multiple loaders with the same group name share one GPU memory pool (size = max, not sum). Enables Wan 2.2 two-transformer setup without doubling VRAM
+- **Custom model patches** (`qlip_patch.py`) — place `qlip_patch.py` next to engine files, auto-loaded at runtime. Supports `patch_signatures(dm)` and `patch_caller(dm)` hooks
+- **LTX-Video 2.3 (22B)** — text-to-video, FP8 + LoRA, dynamic shapes (512px–1408px, 9–121 frames)
+- **Qwen Image Edit** — image editing, BF16 + LoRA, dynamic shapes (512px–1536px), reference image support
+
 ## Table of Contents
 
 - [How It Works](#how-it-works)
@@ -38,8 +47,13 @@ Qlip compiles transformer blocks into optimized engines, delivering significant 
 | [**FLUX.2 Klein**](https://huggingface.co/black-forest-labs/FLUX.2-klein-9B) | Dual-stream DiT | 9B | Image | [TheStageAI/Elastic-FLUX-2-Klein](https://huggingface.co/TheStageAI/Elastic-FLUX-2-Klein) |
 | [**LTX-Video 2**](https://huggingface.co/Lightricks/LTX-2) (LTXAV) | Audio-Video DiT | 19B | Video | [TheStageAI/Elastic-LTX-2](https://huggingface.co/TheStageAI/Elastic-LTX-2) |
 | [**Z-Image-Turbo**](https://huggingface.co/Comfy-Org/z_image_turbo) | NextDiT (Lumina2) | 6B | Image | [TheStageAI/Elastic-Z-Image-Turbo](https://huggingface.co/TheStageAI/Elastic-Z-Image-Turbo) |
+| [**LTX-Video 2.3**](https://huggingface.co/Lightricks/LTX-2.3) (LTXAV) | Audio-Video DiT | 22B | Video (t2v) | [TheStageAI/Elastic-LTX-2.3](https://huggingface.co/TheStageAI/Elastic-LTX-2.3) |
+| [**Qwen Image Edit**](https://huggingface.co/Comfy-Org/Qwen_Image_Edit) | Joint DiT | 14B | Image Edit | [TheStageAI/Elastic-Qwen-Image-Edit](https://huggingface.co/TheStageAI/Elastic-Qwen-Image-Edit) |
+| [**Wan 2.2 I2V**](https://github.com/Wan-Video/Wan2.2) | DiT | 14B | Video (i2v) | [TheStageAI/Elastic-Wan2.2-I2V](https://huggingface.co/TheStageAI/Elastic-Wan2.2-I2V) |
 
 More models coming soon — stay tuned for updates.
+
+> **Note:** LTX-Video 2.3, Qwen Image Edit, and Wan 2.2 I2V require a specific ComfyUI version and custom node setup. See each model's HuggingFace repo for installation instructions and compatible ComfyUI commit.
 
 ### Model Details
 
@@ -72,16 +86,38 @@ Image generation model. Compiled with cfg=1.0, batch=1, static sizes only.
 |-----|-------|-------------|
 | 1.0 (turbo) | 1 | 1024x1024, 1024x768, 768x1024 |
 
-> **Prompt length requirement.** The compiled engines expect the caption embedding to be padded to a fixed length (`cap_feats_len = 64` tokens). Z-Image-Turbo (Lumina2) pads `cap_feats` up to the next multiple of `pad_tokens_multiple = 32`, so:
-> - prompts that yield ≤ 32 caption tokens → padded to **32** → fails with `Invalid input shape: no matching optimization profile`
-> - prompts that yield 33–64 caption tokens → padded to **64** → matches the engine ✓
->
-> Always use **a sufficiently long prompt** (roughly **a full sentence with 20+ words**, or any prompt that produces > 32 tokens after the Qwen tokenizer). Short prompts like `"a cat"` will not work.
->
-> Example of a good prompt:
-> ```
-> "Pixel art style. Latina female with thick wavy hair, harbor boats and pastel houses behind. Breezy seaside light, warm tones, cinematic close-up."
-> ```
+#### LTX-Video 2.3 (22B)
+
+Text-to-video model. 22B full-scale (non-distilled) LTXAV architecture with audio+video dual-stream attention. Compiled as t2v (text-to-video) with fixed batch=2.
+
+| Variant | CFG      | Batch | Engine Type | Static Sizes (WxHxFrames) | Dynamic Range |
+|---------|----------|-------|-------------|--------------------------|---------------|
+| 22B distilled FP8 + LoRA | 1.0, 4.0 | 2 (fixed) | t2v | 768x512x41, 1280x720x121, 1408x896x121 | 512px—768px—1408px, 9—121 frames |
+
+Video resolution and frame count are both dynamic. LoRA rank 1–256.
+
+#### Qwen Image Edit
+
+Image editing model. Takes a reference image + text prompt → generates edited image. Uses joint concat (txt+img → single sequence) with fixed text length padding.
+
+| Variant | CFG | Batch | Static Sizes | Dynamic Sizes | Ref Images |
+|---------|-----|-------|-------------|---------------|------------|
+| BF16 + LoRA | 1.0 | 1 | 768, 1024, 1328, 1536 | All WxH from {512, 768, 1024, 1328, 1536} | 1 |
+
+Text padded to 1536 tokens. Reference method: `index_timestep_zero`. LoRA rank 1–256. Requires `qlip_patch.py` in engines directory for inference.
+
+> **ComfyUI version:** LTX-Video 2.3, Qwen Image Edit, and Wan 2.2 I2V require ComfyUI commit **`b615af1c`** (newer than the default `048dd2f3` used for other models). Use `git checkout b615af1c` in your ComfyUI directory before running these models.
+
+#### Wan 2.2 I2V
+
+Image-to-video generation model. Two-stage pipeline: high-noise transformer generates initial video, low-noise transformer refines it. Both transformers are compiled separately. Uses `shared_memory` option in QlipEnginesLoader to share one GPU memory pool between the two transformers.
+
+| Variant | Transformer | CFG | Batch | Dynamic Sizes | Num frames |
+|---------|------------|-----|-------|---------------|------------|
+| FP8 + LoRA | High-noise | 1.0 | 1 | Up to 640x640 | 81         |
+| FP8 + LoRA | Low-noise | 1.0 | 1 | Up to 640x640 | 81         |
+
+Each transformer has its own engines directory and QlipEnginesLoader node. Set `shared_memory="wan"` on both loaders to share one GPU memory pool (reduces VRAM usage since the two transformers never run simultaneously).
 
 ## Benchmarks
 
@@ -110,6 +146,33 @@ All measurements: single image/video generation, batch size 1, H100, torch 2.8.0
 | **Qlip BF16 + LoRA** | 6.020 | 1.30x |
 | **Qlip FP8 + LoRA** | 5.051 | **1.55x** |
 
+### Video Generation (LTX-Video 2.3, 1280x720, 8 basic sampler steps + 3 upsampling steps, cfg 1.0, 121 frames, t2v, H100)
+
+Transformer pass time only (2nd run, warm). 22B model, FP8 + LoRA.
+
+| Method | Transformer Time (s) | Speedup |
+|--------|---------------------|---------|
+| Eager (PyTorch) | 15.188 | 1.0x |
+| **Qlip FP8 + LoRA** | 8.537 | **1.78x** |
+
+### Image Editing (Qwen Image Edit, cfg 1.0, 4 steps 1328x1328, H100)
+
+Transformer pass time only (2nd run, warm). 1 reference image.
+
+| Method | Transformer Time (s) | Speedup |
+|--------|---------------------|---------|
+| Eager (PyTorch) | 3.135 | 1.0x |
+| **Qlip BF16 + LoRA** | 2.389 | **1.31x** |
+
+### Video Generation (Wan 2.2 I2V, 640x640, 81 frames, 4 steps, cfg 1.0, H100)
+
+Transformer pass time only (2nd run, warm). Two-stage pipeline (high-noise + low-noise).
+
+| Method | Transformer Time (s) | Speedup |
+|--------|---------------------|---------|
+| Eager (PyTorch) | 18.573 | 1.0x |
+| **Qlip FP8 + LoRA** | 12.035 | **1.54x** |
+
 > All benchmarked engines include runtime LoRA support. LoRA adds ~5-15% overhead due to additional MatMul operations per layer. Faster non-LoRA engines will be available in a future update.
 >
 > More GPUs (B200, L40S, RTX 5090) coming soon.
@@ -124,11 +187,17 @@ All measurements: single image/video generation, batch size 1, H100, torch 2.8.0
 
 ### Step 1: Install ComfyUI-Qlip nodes
 
+> **ComfyUI version matters.** Different models require different ComfyUI commits:
+> - FLUX.2 Klein, LTX-Video 2, Z-Image-Turbo → commit **`048dd2f3`** (default below)
+> - LTX-Video 2.3, Qwen Image Edit, Wan 2.2 I2V → commit **`b615af1c`** (newer)
+>
+> Check the model's HuggingFace repo for the exact commit. If you need multiple models from different commits, use the **newer** commit (`b615af1c`) — it is backwards-compatible with older models.
+
 **From scratch** (no ComfyUI yet):
 ```bash
 git clone https://github.com/comfyanonymous/ComfyUI.git
 cd ComfyUI
-git checkout 048dd2f3
+git checkout 048dd2f3  # or b615af1c for LTX-2.3 / Qwen Image Edit / Wan 2.2
 python3 -m venv venv
 source venv/bin/activate
 pip install --upgrade pip
@@ -172,9 +241,15 @@ If you don't have the required models yet, use the download scripts from [`scrip
 
 ```bash
 export COMFYUI_PATH=/path/to/ComfyUI
+
+# Original models (ComfyUI commit 048dd2f3)
 bash custom_nodes/ComfyUI-Qlip/scripts/download_z_image_turbo_models.sh
 bash custom_nodes/ComfyUI-Qlip/scripts/download_ltx_2_models.sh
 bash custom_nodes/ComfyUI-Qlip/scripts/download_flux_klein_models.sh
+
+# New models (ComfyUI commit b615af1c)
+bash custom_nodes/ComfyUI-Qlip/scripts/download_ltx_2_3_models.sh
+bash custom_nodes/ComfyUI-Qlip/scripts/download_qwen_image_edit_models.sh
 ```
 
 FLUX.2 Klein is a gated model — requires `huggingface-cli login` and license acceptance. HuggingFace cache defaults to `/workspace/cache` (override with `HF_HUB_CACHE`). Scripts skip already-downloaded files.
@@ -220,6 +295,10 @@ Precompiled engines are hosted on HuggingFace. The **Qlip Engines Loader** node 
 | LTX-2 19B Distilled FP8 + LoRA | `TheStageAI/Elastic-LTX-2:models/H100/ltx-2-19b-distilled-fp8_lora` |
 | Z-Image-Turbo BF16 + LoRA | `TheStageAI/Elastic-Z-Image-Turbo:models/H100/z-image-turbo_lora` |
 | Z-Image-Turbo FP8 + LoRA | `TheStageAI/Elastic-Z-Image-Turbo:models/H100/z-image-turbo-fp8_lora` |
+| LTX-Video 2.3 22B Distilled FP8 + LoRA (t2v) | `TheStageAI/Elastic-LTX-2.3:models/H100/ltx-2.3-22b-distilled-fp8_lora` |
+| Qwen Image Edit BF16 + LoRA | `TheStageAI/Elastic-Qwen-Image-Edit:models/H100/qwen-image-edit-bf16_lora` |
+| Wan 2.2 I2V High-Noise FP8 + LoRA | `TheStageAI/Elastic-Wan2.2-I2V:models/H100/wan-i2v-high-noise-fp8_lora` |
+| Wan 2.2 I2V Low-Noise FP8 + LoRA | `TheStageAI/Elastic-Wan2.2-I2V:models/H100/wan-i2v-low-noise-fp8_lora` |
 
 The format is `org/repo:path/to/engines`. Engines are downloaded once and cached.
 
@@ -317,27 +396,37 @@ Results auto-reset between workflow runs. Cold start values persist across runs 
 
 Ready-to-use ComfyUI workflow files are in [`workflows/`](workflows/):
 
-| File | Description |
-|------|-------------|
-| `Flux-Klein.json` | FLUX.2 Klein image generation workflow |
-| `video_ltx2_i2v_distilled.json` | LTX-2 image-to-video workflow |
-| `z-image-turbo.json` | Z-Image-Turbo image generation workflow |
+| File | Description | ComfyUI commit |
+|------|-------------|----------------|
+| `Flux-Klein.json` | FLUX.2 Klein image generation | `048dd2f3` |
+| `video_ltx2_i2v_distilled.json` | LTX-2 19B image-to-video | `048dd2f3` |
+| `z-image-turbo.json` | Z-Image-Turbo image generation | `048dd2f3` |
+| `video_ltx2_3_t2v.json` | LTX-Video 2.3 22B text-to-video | `b615af1c` |
+| `qwen_image_edit.json` | Qwen Image Edit | `b615af1c` |
 
 Model download scripts are in [`scripts/`](scripts/):
 
 | Script | Description |
 |--------|-------------|
-| `download_flux_klein_models.sh` | Downloads FLUX.2 Klein models (diffusion model, text encoder, VAE). Requires HF token (gated model) |
-| `download_ltx_2_models.sh` | Downloads LTX-2 models (checkpoints, text encoder, LoRAs, upscaler) |
-| `download_z_image_turbo_models.sh` | Downloads Z-Image-Turbo models (diffusion model, text encoder, VAE, LoRA) |
+| `download_flux_klein_models.sh` | FLUX.2 Klein (diffusion model, text encoder, VAE). Requires HF token |
+| `download_ltx_2_models.sh` | LTX-2 19B (checkpoints, text encoder, LoRAs, upscaler) |
+| `download_z_image_turbo_models.sh` | Z-Image-Turbo (diffusion model, text encoder, VAE, LoRA) |
+| `download_ltx_2_3_models.sh` | LTX-Video 2.3 22B (checkpoint, Gemma text encoder, LoRAs, upscaler) |
+| `download_qwen_image_edit_models.sh` | Qwen Image Edit (diffusion model, text encoder, LoRA) |
 
 To download models for a specific workflow:
 
 ```bash
 export COMFYUI_PATH=/path/to/ComfyUI
+
+# Original models (ComfyUI 048dd2f3)
 bash custom_nodes/ComfyUI-Qlip/scripts/download_flux_klein_models.sh
 bash custom_nodes/ComfyUI-Qlip/scripts/download_ltx_2_models.sh
 bash custom_nodes/ComfyUI-Qlip/scripts/download_z_image_turbo_models.sh
+
+# New models (ComfyUI b615af1c)
+bash custom_nodes/ComfyUI-Qlip/scripts/download_ltx_2_3_models.sh
+bash custom_nodes/ComfyUI-Qlip/scripts/download_qwen_image_edit_models.sh
 ```
 
 Scripts skip already-downloaded files, so they are safe to re-run. HuggingFace cache defaults to `/workspace/cache` — override with `HF_HUB_CACHE`.

@@ -14,6 +14,57 @@ logger = logging.getLogger("qlip_nodes")
 
 MAX_LORA_RANK = 256
 
+# Cache for custom patch modules (keyed by engines_dir path)
+_custom_patch_cache = {}
+
+
+def _get_custom_patch_module(engines_dir):
+    """Load and cache the qlip_patch.py module from engines directory."""
+    import importlib.util
+
+    engines_dir = str(engines_dir)
+    patch_file = Path(engines_dir) / "qlip_patch.py"
+    if not patch_file.is_file():
+        return None
+
+    if engines_dir not in _custom_patch_cache:
+        spec = importlib.util.spec_from_file_location(
+            f"qlip_patch_{hash(engines_dir)}", str(patch_file)
+        )
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        _custom_patch_cache[engines_dir] = mod
+        logger.info(f"Loaded custom patch module from {patch_file}")
+
+    return _custom_patch_cache[engines_dir]
+
+
+def _has_custom_patch(engines_dir, func_name):
+    """Return True if qlip_patch.py defines `func_name`. Custom patches override built-in."""
+    if not engines_dir:
+        return False
+    mod = _get_custom_patch_module(engines_dir)
+    return mod is not None and getattr(mod, func_name, None) is not None
+
+
+def _load_custom_patch(engines_dir, func_name, dm):
+    """Load and call a function from qlip_patch.py in the engines directory.
+
+    Supports two hook functions:
+        patch_signatures(dm) — called BEFORE auto_setup()
+        patch_caller(dm)     — called AFTER engine loading
+    """
+    if not engines_dir:
+        return
+    mod = _get_custom_patch_module(engines_dir)
+    if mod is None:
+        return
+    fn = getattr(mod, func_name, None)
+    if fn is not None:
+        fn(dm)
+        logger.info(f"Applied custom {func_name}() from "
+                    f"{Path(engines_dir) / 'qlip_patch.py'}")
+
 
 class QlipLoraStack:
     """
@@ -85,12 +136,13 @@ class QlipEnginesLoader:
     _lora_groups_cache = {}  # str(engines_dir) → list[LoRABlockGroup]
     _last_lora_key = {}      # str(engines_dir) → tuple (hash of lora_stack)
     _lora_supported = {}     # str(engines_dir) → bool (engines have LoRA support)
+    _shared_mm = {}          # str(group_name) → NvidiaMemoryManager (shared across loaders)
 
     @classmethod
     def INPUT_TYPES(s):
         return {
             "required": {
-                "model": ("MODEL",),
+                "model": ("*",),
             },
             "optional": {
                 "engines_path": ("STRING", {
@@ -111,20 +163,33 @@ class QlipEnginesLoader:
                                "Reduces kernel launch overhead for faster inference. "
                                "First run captures the graph, subsequent runs replay it.",
                 }),
+                "shared_memory": ("STRING", {
+                    "default": "",
+                    "tooltip": "Shared memory group name. Multiple QlipEnginesLoader nodes "
+                               "with the same name share one GPU memory pool (size = max "
+                               "across all sessions, not sum). Each loader deallocates → "
+                               "re-allocates, so every transformer works immediately. "
+                               "Useful for WAN 2.2 (high and low transformers).",
+                }),
             },
         }
 
-    RETURN_TYPES = ("MODEL",)
+    RETURN_TYPES = ("*",)
     RETURN_NAMES = ("model",)
     FUNCTION = "load_engines"
     CATEGORY = "qlip"
+
+    @classmethod
+    def VALIDATE_INPUTS(cls, **kwargs):
+        return True
 
     # ------------------------------------------------------------------
     # Main entry point
     # ------------------------------------------------------------------
 
     def load_engines(self, model, engines_path="",
-                     hf_repo="", lora_stack=None, cuda_graph=False):
+                     hf_repo="", lora_stack=None, cuda_graph=False,
+                     shared_memory=""):
         if not engines_path and not hf_repo:
             print("[qlip] No engines_path or hf_repo specified, "
                   "passing model through unchanged")
@@ -159,6 +224,7 @@ class QlipEnginesLoader:
         patched_model = model.clone()
         dm = patched_model.model.diffusion_model
 
+
         engines_cached = cache_key in self._engines_cache
         lora_key = self._compute_lora_key(lora_stack)
 
@@ -170,8 +236,8 @@ class QlipEnginesLoader:
             dm._qlip_imanager = imanager
             dm._qlip_memory_manager = mm
 
-            self._apply_signature_patches(dm)
-            self._apply_caller_patches(dm)
+            self._apply_signature_patches(dm, engines_dir)
+            self._apply_caller_patches(dm, engines_dir)
 
             groups = self._lora_groups_cache[cache_key]
             prev_key = self._last_lora_key.get(cache_key)
@@ -206,7 +272,7 @@ class QlipEnginesLoader:
 
         # Signature patches BEFORE engine loading —
         # auto_setup() reads block.model.forward signature for input mapping
-        self._apply_signature_patches(dm)
+        self._apply_signature_patches(dm, engines_dir)
 
         # Load QLIP engines
         if not engines_cached:
@@ -218,9 +284,20 @@ class QlipEnginesLoader:
             imanager = NvidiaInferenceManager(model=dm, workspace=engines_dir)
             imanager.auto_setup()
 
-            # Create memory manager, register sessions
-            # (allocate_memory is deferred until AFTER lora wrapper setup)
-            mm = NvidiaMemoryManager()
+            # Create or reuse memory manager.
+            # When shared_memory is set, all loaders in the same group
+            # register their sessions into one NvidiaMemoryManager.
+            # Pool size = max(all sessions), not sum — so two transformers
+            # that never run simultaneously share one pool.
+            if shared_memory:
+                if shared_memory not in self._shared_mm:
+                    self._shared_mm[shared_memory] = NvidiaMemoryManager()
+                    print(f"[qlip] Created shared memory group "
+                          f"'{shared_memory}'")
+                mm = self._shared_mm[shared_memory]
+            else:
+                mm = NvidiaMemoryManager()
+
             for mod in imanager.modules:
                 mm.add_infsession(mod.session)
 
@@ -235,7 +312,7 @@ class QlipEnginesLoader:
         dm._qlip_memory_manager = mm
 
         # Caller patches AFTER engine loading
-        self._apply_caller_patches(dm)
+        self._apply_caller_patches(dm, engines_dir)
 
         # LoRA wrapper (AFTER engine loading — wraps CompiledModules)
         if with_lora:
@@ -254,18 +331,73 @@ class QlipEnginesLoader:
             self._lora_groups_cache[cache_key] = lora_groups
             self._last_lora_key[cache_key] = lora_key
 
-        # Allocate device memory AFTER all setup (lora wrapper, patches)
-        # This must come last — matches working WAN pattern
+        # Allocate device memory AFTER all setup (lora wrapper, patches).
+        #
+        # For shared_memory groups: the mm may already be allocated from a
+        # previous loader in the group. We must deallocate first, then
+        # re-extract sizes (now covering sessions from ALL loaders so far),
+        # then re-allocate. This is safe because:
+        #   - The previous transformer already finished its sampler pass
+        #     (ComfyUI executes nodes in dependency order)
+        #   - allocate_memory() sets the new device_memory pointer on ALL
+        #     sessions in the mm (including the previous transformer's),
+        #     so the previous transformer will also work on subsequent runs
+        #   - Pool size = max(all sessions), so it doesn't grow linearly
+        if shared_memory and hasattr(mm, "device_mem"):
+            mm.deallocate_memory()
+            print(f"[qlip] Deallocated shared memory group "
+                  f"'{shared_memory}' for re-allocation")
+
         mm.extract_device_memory_size()
         mm.allocate_memory()
-        print("[qlip] Device memory allocated")
+
+        if shared_memory:
+            print(f"[qlip] Shared memory allocated for group "
+                  f"'{shared_memory}' "
+                  f"({len(mm._infsessions)} sessions)")
+        else:
+            print("[qlip] Device memory allocated")
 
         # Enable CUDA Graph on QLIP sessions
         if cuda_graph:
             self._enable_cuda_graph(imanager)
 
+        # Disable custom loader features that conflict with compiled engines
+        # (load_weights, auto_cpu_offload, block_swap). Works for any loader
+        # type — WanVideoWrapper, LTX custom nodes, etc.
+        self._disable_custom_loader_features(dm, patched_model)
+
         return (patched_model,)
 
+    @staticmethod
+    def _disable_custom_loader_features(dm, model_patcher):
+        """Disable weight loading/offloading from custom loaders and fix dtypes.
+
+        Custom loaders (WanVideoWrapper, etc.) re-load weights and offload
+        the model between runs. With compiled engines this is unnecessary
+        and breaks CompiledModule blocks.
+
+        Also fixes dtype mismatch: comfy.sd may load BF16 checkpoints as FP16,
+        but engines are compiled with BF16 inputs. Convert non-compiled parts
+        of the model to BF16 so activations flowing into compiled blocks
+        are BF16.
+
+        Fields set:
+        - dm.patched_linear = True → skip _replace_linear, use meta offload path
+        - model["sd"] = None → skip load_weights (guarded by sd is not None)
+        - model["auto_cpu_offload"] = False → skip CPU offloading
+        """
+        # WanVideoWrapper: skip _replace_linear
+        dm.patched_linear = True
+
+        if hasattr(model_patcher, 'model') and hasattr(model_patcher.model, '__setitem__'):
+            try:
+                # Clear state_dict → load_weights guard: "if sd is not None" → skip
+                model_patcher.model["sd"] = None
+                # Disable auto CPU offload
+                model_patcher.model["auto_cpu_offload"] = False
+            except (KeyError, TypeError):
+                pass
     # ------------------------------------------------------------------
     # LoRA cache key
     # ------------------------------------------------------------------
@@ -372,12 +504,29 @@ class QlipEnginesLoader:
             configs = LoRAManager.infer_config(
                 first_path, lora_format_converter=convert_lora_format,
             )
-            logger.warning(
-                "No lora_config.json in engines dir — config inferred from %s",
-                Path(first_path).name,
-            )
-            print(f"[qlip] WARNING: lora_config.json not found in engines dir, "
-                  f"config inferred from {Path(first_path).name}")
+            if configs:
+                logger.warning(
+                    "No lora_config.json in engines dir — config inferred from %s",
+                    Path(first_path).name,
+                )
+                print(f"[qlip] WARNING: lora_config.json not found in engines dir, "
+                      f"config inferred from {Path(first_path).name}")
+            else:
+                # infer_config() failed — fallback to inferring from model structure.
+                # Critical: if engine was compiled with LoRA, blocks expect lora_packed
+                # input. Without QlipLoraModule.setup → missing lora_packed error.
+                logger.warning(
+                    "LoRAManager.infer_config returned [] for %s — "
+                    "falling back to model structure inference",
+                    Path(first_path).name,
+                )
+                print(f"[qlip] WARNING: infer_config returned [] for "
+                      f"{Path(first_path).name}, falling back to model structure")
+                configs = []
+                for attr, prefix in _discover_block_groups(dm):
+                    cfg = _infer_lora_config_from_model(dm, attr, prefix)
+                    if cfg:
+                        configs.append(cfg)
         else:
             configs = []
             for attr, prefix in _discover_block_groups(dm):
@@ -463,38 +612,70 @@ class QlipEnginesLoader:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _apply_signature_patches(dm):
+    def _apply_signature_patches(dm, engines_dir=None):
         """Apply block signature patches BEFORE engine loading.
 
         These patches change block.model.forward signature so that
         auto_setup() sees the correct input names matching the engine.
         Only needed for models where block.forward was restructured
         at compile time (e.g., merged inputs into joint tensor).
+
+        If qlip_patch.py defines patch_signatures(), it overrides built-in patches.
         """
-        pass
+        # Custom patch takes priority — skip built-in if custom is present
+        custom_present = _has_custom_patch(engines_dir, "patch_signatures")
+
+        if not custom_present:
+            pass
+
+        # Custom patch from engines directory
+        if engines_dir:
+            _load_custom_patch(engines_dir, "patch_signatures", dm)
 
     @staticmethod
-    def _apply_caller_patches(dm):
+    def _apply_caller_patches(dm, engines_dir=None):
         """Apply caller patches AFTER engine loading.
 
         These patches modify the transformer's forward to prepare
         inputs for compiled blocks (concat, stack, set attributes).
-        """
-        # FLUX Klein global_modulation
-        if (getattr(dm, 'params', None)
-                and getattr(dm.params, 'global_modulation', False)):
-            from ..utils import patch_forward_orig_for_modulation
-            patch_forward_orig_for_modulation(dm)
 
-        # LTXAV (audio-video LTX-2)
-        from ..utils import is_ltxav_model
-        if is_ltxav_model(dm):
-            from ..utils import (
-                patch_compressed_timestep,
-                patch_process_transformer_blocks,
-            )
-            patch_compressed_timestep(dm)
-            patch_process_transformer_blocks(dm)
+        If qlip_patch.py defines patch_caller(), it overrides built-in patches.
+        """
+        # Custom patch takes priority — skip built-in if custom is present
+        custom_present = _has_custom_patch(engines_dir, "patch_caller")
+
+        if not custom_present:
+            # FLUX Klein global_modulation
+            if (getattr(dm, 'params', None)
+                    and getattr(dm.params, 'global_modulation', False)):
+                from ..utils import patch_forward_orig_for_modulation
+                patch_forward_orig_for_modulation(dm)
+
+            # LTXAV (audio-video LTX-2)
+            from ..utils import is_ltxav_model
+            if is_ltxav_model(dm):
+                from ..utils import (
+                    patch_compressed_timestep,
+                    patch_process_transformer_blocks,
+                )
+                patch_compressed_timestep(dm)
+                patch_process_transformer_blocks(dm)
+
+            # # Z-Image-Turbo / Lumina2 NextDiT — force fixed cap_feats length
+            from ..utils import is_zimage_lumina_model, patch_zimage_fixed_cap_len
+            if is_zimage_lumina_model(dm):
+                # Engines are compiled with cap_feats=64. Force runtime to match.
+                patch_zimage_fixed_cap_len(dm, fixed_cap_len=64)
+            #
+            # # Qwen Image Edit — concat txt+img into joint_hidden_states caller patch
+            # from ..utils import is_qwen_image_model
+            # if is_qwen_image_model(dm):
+            #     from ..utils import patch_qwen_image_caller
+            #     patch_qwen_image_caller(dm, fixed_txt_len=1536)
+
+        # Custom patch from engines directory
+        if engines_dir:
+            _load_custom_patch(engines_dir, "patch_caller", dm)
 
     @staticmethod
     def _enable_cuda_graph(imanager):

@@ -2,7 +2,7 @@
   "id": "9ae6082b-c7f4-433c-9971-7a8f65a3ea65",
   "revision": 0,
   "last_node_id": 79,
-  "last_link_id": 104,
+  "last_link_id": 105,
   "nodes": [
     {
       "id": 62,
@@ -109,7 +109,7 @@
         46
       ],
       "flags": {},
-      "order": 15,
+      "order": 14,
       "mode": 0,
       "inputs": [
         {
@@ -207,7 +207,7 @@
         82
       ],
       "flags": {},
-      "order": 14,
+      "order": 13,
       "mode": 0,
       "inputs": [
         {
@@ -245,13 +245,13 @@
         82
       ],
       "flags": {},
-      "order": 12,
+      "order": 11,
       "mode": 0,
       "inputs": [
         {
           "name": "passthrough",
           "type": "*",
-          "link": 102
+          "link": 105
         }
       ],
       "outputs": [
@@ -269,74 +269,6 @@
       "widgets_values": [
         "sampler",
         true
-      ]
-    },
-    {
-      "id": 70,
-      "type": "KSampler",
-      "pos": [
-        46.035972222222476,
-        199.701666666667
-      ],
-      "size": [
-        315,
-        262
-      ],
-      "flags": {},
-      "order": 13,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "model",
-          "type": "MODEL",
-          "link": 85
-        },
-        {
-          "name": "positive",
-          "type": "CONDITIONING",
-          "link": 76
-        },
-        {
-          "name": "negative",
-          "type": "CONDITIONING",
-          "link": 77
-        },
-        {
-          "name": "latent_image",
-          "type": "LATENT",
-          "link": 78
-        }
-      ],
-      "outputs": [
-        {
-          "name": "LATENT",
-          "type": "LATENT",
-          "slot_index": 0,
-          "links": [
-            86
-          ]
-        }
-      ],
-      "properties": {
-        "Node name for S&R": "KSampler",
-        "cnr_id": "comfy-core",
-        "ver": "0.3.64",
-        "enableTabs": false,
-        "tabWidth": 65,
-        "tabXOffset": 10,
-        "hasSecondTab": false,
-        "secondTabText": "Send Back",
-        "secondTabOffset": 80,
-        "secondTabWidth": 65
-      },
-      "widgets_values": [
-        1046700449365763,
-        "randomize",
-        8,
-        1,
-        "res_multistep",
-        "simple",
-        1
       ]
     },
     {
@@ -398,7 +330,7 @@
         82
       ],
       "flags": {},
-      "order": 17,
+      "order": 16,
       "mode": 0,
       "inputs": [
         {
@@ -441,49 +373,6 @@
       ],
       "color": "#432",
       "bgcolor": "#000"
-    },
-    {
-      "id": 79,
-      "type": "TorchCompileModelAdvanced",
-      "pos": [
-        217.7084274358342,
-        -433.64524769799334
-      ],
-      "size": [
-        353.380859375,
-        202
-      ],
-      "flags": {},
-      "order": 11,
-      "mode": 4,
-      "inputs": [
-        {
-          "name": "model",
-          "type": "MODEL",
-          "link": 101
-        }
-      ],
-      "outputs": [
-        {
-          "name": "MODEL",
-          "type": "MODEL",
-          "links": [
-            102
-          ]
-        }
-      ],
-      "properties": {
-        "Node name for S&R": "TorchCompileModelAdvanced"
-      },
-      "widgets_values": [
-        "inductor",
-        false,
-        "default",
-        "auto",
-        true,
-        64,
-        false
-      ]
     },
     {
       "id": 74,
@@ -582,7 +471,7 @@
         660
       ],
       "flags": {},
-      "order": 16,
+      "order": 15,
       "mode": 0,
       "inputs": [
         {
@@ -733,7 +622,7 @@
         "Node name for S&R": "QlipLoraStack"
       },
       "widgets_values": [
-        "",
+        "/path/to/lora.safetensors",
         1
       ]
     },
@@ -741,8 +630,8 @@
       "id": 75,
       "type": "QlipEnginesLoader",
       "pos": [
-        -142.58538210103455,
-        -372.57951880015753
+        -96.6997101676477,
+        -360.31233873575087
       ],
       "size": [
         270,
@@ -750,7 +639,7 @@
       ],
       "flags": {},
       "order": 10,
-      "mode": 4,
+      "mode": 0,
       "inputs": [
         {
           "name": "model",
@@ -775,7 +664,7 @@
           "name": "model",
           "type": "MODEL",
           "links": [
-            101
+            105
           ]
         }
       ],
@@ -786,6 +675,74 @@
         "",
         "TheStageAI/Elastic-Z-Image-Turbo:models/H100/z-image-turbo-fp8_lora",
         false
+      ]
+    },
+    {
+      "id": 70,
+      "type": "KSampler",
+      "pos": [
+        46.035972222222476,
+        199.701666666667
+      ],
+      "size": [
+        315,
+        262
+      ],
+      "flags": {},
+      "order": 12,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 85
+        },
+        {
+          "name": "positive",
+          "type": "CONDITIONING",
+          "link": 76
+        },
+        {
+          "name": "negative",
+          "type": "CONDITIONING",
+          "link": 77
+        },
+        {
+          "name": "latent_image",
+          "type": "LATENT",
+          "link": 78
+        }
+      ],
+      "outputs": [
+        {
+          "name": "LATENT",
+          "type": "LATENT",
+          "slot_index": 0,
+          "links": [
+            86
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "KSampler",
+        "cnr_id": "comfy-core",
+        "ver": "0.3.64",
+        "enableTabs": false,
+        "tabWidth": 65,
+        "tabXOffset": 10,
+        "hasSecondTab": false,
+        "secondTabText": "Send Back",
+        "secondTabOffset": 80,
+        "secondTabWidth": 65
+      },
+      "widgets_values": [
+        762910174923842,
+        "randomize",
+        8,
+        1,
+        "res_multistep",
+        "simple",
+        1
       ]
     }
   ],
@@ -895,26 +852,18 @@
       "MODEL"
     ],
     [
-      101,
-      75,
-      0,
-      79,
-      0,
-      "MODEL"
-    ],
-    [
-      102,
-      79,
-      0,
-      71,
-      0,
-      "MODEL"
-    ],
-    [
       104,
       66,
       0,
       69,
+      0,
+      "MODEL"
+    ],
+    [
+      105,
+      75,
+      0,
+      71,
       0,
       "MODEL"
     ]
@@ -965,8 +914,8 @@
     "ds": {
       "scale": 0.5964211996226031,
       "offset": [
-        1380.3574224078243,
-        442.41662813357317
+        939.3414924468567,
+        325.0499080299052
       ]
     },
     "frontendVersion": "1.39.16",

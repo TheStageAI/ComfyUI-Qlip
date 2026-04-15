@@ -660,3 +660,96 @@ def patch_process_transformer_blocks(transformer):
         patched_process_transformer_blocks, transformer
     )
     print("[qlip] Patched _process_transformer_blocks: stack pe → [2,...] tensors")
+
+
+# ---------------------------------------------------------------------------
+# Z-IMAGE-TURBO / LUMINA2 SPECIFIC — fixed cap_feats length
+# ---------------------------------------------------------------------------
+
+
+def is_zimage_lumina_model(dm) -> bool:
+    """Check if diffusion model is Z-Image-Turbo / Lumina2 (NextDiT)."""
+    cls_name = type(dm).__name__
+    if cls_name in ("NextDiT", "ZImageNextDiT", "Lumina2"):
+        return True
+    # Heuristic: NextDiT has pad_tokens_multiple, x_pad_token, cap_pad_token
+    if (hasattr(dm, "pad_tokens_multiple")
+            and hasattr(dm, "cap_pad_token")
+            and hasattr(dm, "x_pad_token")):
+        return True
+    return False
+
+
+def patch_zimage_fixed_cap_len(transformer, fixed_cap_len: int = 64):
+    """Force Lumina2 / Z-Image cap_feats to a fixed padded length.
+
+    The compiled Qlip engines expect cap_feats padded to exactly
+    ``fixed_cap_len`` tokens. The stock Lumina2 patches cap_feats up
+    to the next multiple of ``pad_tokens_multiple`` (32), so a short
+    prompt yields cap_len=32 (fail), a medium prompt yields 64 (ok),
+    a longer one yields 96 (fail), etc.
+
+    This patch wraps ``embed_cap`` so that the resulting cap_feats
+    tensor is always exactly ``fixed_cap_len`` tokens long: padded
+    with ``cap_pad_token`` if shorter, truncated if longer.
+
+    Must be called AFTER engine loading.
+    """
+    if not hasattr(transformer, "embed_cap"):
+        print(f"[qlip] Z-Image patch skipped: no embed_cap on "
+              f"{type(transformer).__name__}")
+        return
+
+    orig_embed_cap = transformer.embed_cap
+
+    def patched_embed_cap(cap_feats=None, offset=0, bsz=1, device=None, dtype=None):
+        # Run the original to get the standard padded cap_feats
+        embeds, freqs_cis, cap_feats_len = orig_embed_cap(
+            cap_feats=cap_feats, offset=offset,
+            bsz=bsz, device=device, dtype=dtype,
+        )
+
+        # embeds is a tuple; embeds[0] is the cap_feats tensor (B, L, D)
+        cf = embeds[0]
+        L = cf.shape[1]
+
+        if L == fixed_cap_len:
+            return embeds, freqs_cis, cap_feats_len
+
+        if L < fixed_cap_len:
+            # Pad with cap_pad_token to reach fixed length
+            pad_extra = fixed_cap_len - L
+            pad_tok = transformer.cap_pad_token.to(
+                device=cf.device, dtype=cf.dtype, copy=True,
+            ).unsqueeze(0).repeat(cf.shape[0], pad_extra, 1)
+            cf_new = torch.cat((cf, pad_tok), dim=1)
+        else:
+            # Truncate (rare — would need a very long prompt)
+            cf_new = cf[:, :fixed_cap_len, :]
+
+        # Recompute cap_pos_ids and freqs_cis for the new cap length.
+        # freqs_cis from embed_cap is a tuple (from rope_embedder).
+        # We must preserve its type — embed_all does `freqs_cis += (None,)`.
+        cap_pos_ids = torch.zeros(
+            cf_new.shape[0], cf_new.shape[1], 3,
+            dtype=torch.float32, device=cf_new.device,
+        )
+        cap_pos_ids[:, :, 0] = (
+            torch.arange(cf_new.shape[1], dtype=torch.float32,
+                         device=cf_new.device)
+            + 1.0 + offset
+        )
+
+        if hasattr(transformer, "rope_embedder"):
+            # Original embed_cap returns freqs_cis as a single-element tuple:
+            #   (rope_embedder(cap_pos_ids).movedim(1, 2),)
+            # embed_all then does `freqs_cis += (None,)` — tuple concat.
+            # Must preserve this exact format.
+            freqs_cis = (transformer.rope_embedder(cap_pos_ids).movedim(1, 2),)
+
+        embeds_new = (cf_new,) + tuple(embeds[1:])
+        return embeds_new, freqs_cis, cap_feats_len
+
+    transformer.embed_cap = patched_embed_cap
+    print(f"[qlip] Patched embed_cap: cap_feats forced to "
+          f"{fixed_cap_len} tokens")

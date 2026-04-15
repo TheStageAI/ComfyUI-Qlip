@@ -10,4 +10,6 @@ from .helpers import (
     is_ltxav_model,
     patch_compressed_timestep,
     patch_process_transformer_blocks,
+    is_zimage_lumina_model,
+    patch_zimage_fixed_cap_len,
 )
