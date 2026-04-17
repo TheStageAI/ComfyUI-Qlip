@@ -123,7 +123,7 @@ Find the function that calls block.forward() (usually `forward_orig` or `_forwar
 - What does it pass to each block?
 - Does it compute modulation/conditioning outside blocks as non-tensor objects?
 
-### 1.4 Analyze the workflow for weight offloading
+### 1.5 Analyze the workflow for weight offloading
 
 **CRITICAL**: Read through ALL nodes in the workflow JSON. Look for any node that might unload, offload, or free model weights AFTER the model is loaded. Compiled engines are binary GPU objects — if any node calls `unpatch_model()`, moves the model to CPU, or frees GPU memory, the engines will be destroyed and cannot be restored.
 
@@ -135,7 +135,7 @@ Look for nodes like:
 
 If found — warn the user that these nodes must be removed from the workflow when using compiled engines.
 
-### 1.5 Check block return values
+### 1.6 Check block return values
 
 If block.forward() can return `None` in some code paths — ONNX export will fail. Patch to always return tensors.
 
@@ -369,8 +369,6 @@ If the value rarely changes in practice (e.g., txt_len is usually similar), baki
 
 ### L12: Caller patch must use keyword arguments when calling compiled blocks
 
-### L12: Caller patch must use keyword arguments when calling compiled blocks
-
 At inference time, compiled blocks are wrapped by `QlipLoraModule` which prepends `lora_packed` as first positional arg. If the caller passes other args as positional too, the engine adapter can't match them by name → injects duplicate inputs or fails with "missing argument".
 
 ```python
@@ -383,7 +381,7 @@ joint_out = block(joint_hidden_states=joint_hidden_states, temb=temb, image_rota
 
 This applies to ALL caller patches that call compiled blocks at inference time.
 
-### L11: Text length varies with tokenizer
+### L13: Text length varies with tokenizer
 
 Don't hardcode `txt_len`. Derive from calibration:
 ```python
@@ -391,11 +389,11 @@ calib_seq_len = cm.modules[0].ioconfig._current_shapes[0]["inputs"]["x"][1]
 txt_len = calib_seq_len - calc_img_tokens(calib_w, calib_h)
 ```
 
-### L11: Audio/video models need ALL modalities in calibration
+### L14: Audio/video models need ALL modalities in calibration
 
 If model has audio+video streams, calibration MUST include audio latents. Without audio → audio branch not traced → LoRA layers missing from ONNX.
 
-### L12: ALWAYS add a dynamic range profile
+### L15: ALWAYS add a dynamic range profile
 
 Static profiles (min==opt==max) only match exact shapes. At inference, the actual seq_len depends on the input image size, which may not exactly match any compiled resolution. Without a dynamic range profile, inference will fail with "no optimization profile defined for the given input shapes".
 
@@ -549,7 +547,7 @@ diff = (compiled_output - ref_output).abs().max().item()
 print(f"Max diff: {diff}")  # Should be < 0.01 for BF16
 ```
 
-### 3.2 Common dynamo/export issues
+### 3.5 Common dynamo/export issues
 
 | Issue | Symptom | Fix |
 |-------|---------|-----|
@@ -564,7 +562,7 @@ print(f"Max diff: {diff}")  # Should be < 0.01 for BF16
 | `io_dtype_per_tensor` causing type mismatch | `ElementWiseOperation PROD must have same types` | Check if model casts PE to BF16 before blocks — if yes, do NOT set PE to FP32 |
 | Mixed FP32/BF16 inputs in STRONGLY_TYPED | `ElementWiseOperation SUM/PROD must have same input types (Half/BFloat16 and Float)` | See **io_dtype debugging** section below |
 
-### 3.3 Dynamic axes — the most critical decision
+### 3.6 Dynamic axes — the most critical decision
 
 TRT dynamic axes are the #1 source of compilation failures. Three rules:
 
@@ -1054,7 +1052,7 @@ negative = [[neg_cond, {"reference_latents": [ref_latent]}]]  # ← same path
 
 **CFG > 1 doubles batch**: If cfg > 1.0, ComfyUI runs both positive and negative conditioning, doubling the effective batch. If compiling for cfg=1.0, set `cfg=1.0` in calibration to avoid batch=2 shapes being collected.
 
-### 4.7 Compile
+### 4.8 Compile
 
 ```python
 restore_rope = patch_rope_for_export()
@@ -1072,7 +1070,7 @@ restore_rope()
 - `recompile_existing=False` — skip blocks that already have `.engine`/`.qlip` files
 - `dump_onnx=False` — set `True` to save intermediate ONNX files for debugging
 
-### 4.8 Save LoRA config
+### 4.9 Save LoRA config
 
 After compilation, save `lora_config.json` in the engines directory. This file is auto-loaded by ComfyUI-Qlip nodes at inference time to configure LoRA injection.
 
@@ -1117,7 +1115,7 @@ if lora_configs:
 - `max_features` — the largest `in_features` or `out_features` across all LoRA layers. Determines `lora_packed` tensor width
 - `layers` — list of Linear layers that have LoRA. **Order must match execution order** in `block.forward()`. Names are relative to the block (e.g., `attn.to_q`, not `transformer_blocks.0.attn.to_q`)
 
-### 4.9 Key API reference
+### 4.10 Key API reference
 
 | Class / Function | Package | Purpose |
 |---|---|---|
