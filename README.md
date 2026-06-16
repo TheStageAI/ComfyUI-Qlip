@@ -68,6 +68,13 @@ Image generation model. Compiled with separate engines for **distilled** and **b
 
 Distilled and base models require separate engines (different batch sizes). Dynamic range supports any resolution from 512x512 to 1024x1024 (including non-square). Static profiles provide optimal performance at the listed sizes.
 
+> **H100 vs Blackwell — different mode.** The H100 engines above are plain
+> **text-to-image** generation. The **Blackwell** FLUX.2 Klein engines (RTX 5090 +
+> B200) are compiled in **image-edit mode** (`--edit --max-ref-images 1`): they
+> accept one reference image/latent in addition to the prompt, so `img_seq_len`
+> carries the extra ref tokens. Use the edit workflow with these engines (a
+> text-only graph won't supply the reference-latent input the engine expects).
+
 #### LTX-Video 2 (19B)
 
 Audio-video generation model. Currently only the **distilled** variant is compiled (cfg=1.0, batch=1). Only **image-to-video (i2v)** workflow is supported.
@@ -177,6 +184,147 @@ Transformer pass time only (2nd run, warm). Two-stage pipeline (high-noise + low
 >
 > More GPUs (B200, L40S, RTX 5090) coming soon.
 
+### Blackwell engines — planned (in progress)
+
+We are recompiling the lineup for **Blackwell**: RTX 5090 (sm_120a) for models that
+fit in ~31 GB, B200 (sm_100) for the rest, and all of them on B200 for a full
+sm_100 set. New on Blackwell: **NVFP4 (FP4)** weights (~4× smaller than BF16, native
+fast path) in addition to FP8, plus FP4 attention on the 5090. Single image/video
+generation, batch size 1, warm run (engines already loaded), LoRA-enabled engines.
+Measurements filled in as they come; `_TBD_` = not measured yet. FLUX.2 Klein is
+the **distilled** variant — **4 sampling steps** (distillation lets it converge in
+4 vs ~50 for the base model), cfg 1.0, batch 1; times are the full warm generation
+at 1024x2048.
+
+#### FLUX.2 Klein 9B (edit) — RTX 5090, 1024x2048 (distilled, 4 steps)
+
+| Method | Time (s) | Speedup |
+|--------|----------|---------|
+| Eager (PyTorch) | 10.144 | 1.0x |
+| **Qlip FP8-dynamic + LoRA** | 7.919 | 1.28x |
+| **Qlip FP8-static + LoRA** | 7.520 | 1.35x |
+| **Qlip NVFP4 + LoRA** | 6.058 | 1.67x |
+| **Qlip NVFP4 + FP4-attention + LoRA** | 3.299 | 3.07x |
+| **Qlip NVFP4 + FP4-attention (no LoRA)** | **2.810** | **3.61x** |
+
+> **LoRA overhead (measured).** `+ LoRA` engines carry runtime LoRA support (extra
+> per-layer MatMuls), and that cost is paid **even when no LoRA is applied** — the
+> engine still gets a zero-filled `lora_packed` tensor (LoRA is a compile-time graph
+> input). Direct measurement on the NVFP4 + FP4-attention engine:
+> **3.299 s (LoRA) → 2.810 s (no-LoRA) = −0.489 s (~15%)**. So a **no-LoRA engine is
+> always the fastest** for a given precision. Applying the same ~0.49 s delta as an
+> estimate, the no-LoRA floors for the other Klein engines would be roughly:
+> FP8-dynamic ≈ 7.43 s, FP8-static ≈ 7.03 s, NVFP4 ≈ 5.57 s (projected — only the
+> NVFP4+FP4-attn no-LoRA row is actually built/measured).
+>
+> **We beat eager SageAttention3.** Eager NVFP4 `.safetensors` + SageAttention3 is
+> **3.226 s** (the fastest non-Qlip path). Our Qlip **NVFP4 + FP4-attention** engine
+> is **3.299 s with LoRA** (essentially on par despite carrying LoRA) and
+> **2.810 s without LoRA — ~13% faster than eager+SageAttention3**, at a **3.61×**
+> speedup over BF16 eager. (FP4 attention here is a dedicated `QlipFP4Attention`
+> plugin node that replaces the SDPA pattern; the block's Linears stay NVFP4.)
+
+#### Z-Image-Turbo 6B — RTX 5090
+
+| Method | Time (s) | Speedup |
+|--------|----------|---------|
+| Eager (PyTorch) | _TBD_ | 1.0x |
+| **Qlip FP8-dynamic + LoRA** | _TBD_ | _TBD_ |
+| **Qlip FP8-static + LoRA** | _TBD_ | _TBD_ |
+| **Qlip NVFP4 + LoRA** | _TBD_ | _TBD_ |
+
+#### Reference: external NVFP4 `.safetensors` (eager, RTX 5090)
+
+Pre-quantized NVFP4 weight checkpoints run in **eager PyTorch** (not our Qlip
+engines) — a baseline to compare our engines against, measured once plain and once
+with **SageAttention3** (`sageattn3_blackwell`, the eager FP4 attention kernel for
+consumer Blackwell). Order: NVFP4 alone, then + SageAttention3.
+
+Checkpoints:
+- **FLUX.2 Klein 9B NVFP4** — [`black-forest-labs/FLUX.2-klein-9b-nvfp4`](https://huggingface.co/black-forest-labs/FLUX.2-klein-9b-nvfp4) (`flux-2-klein-9b-nvfp4.safetensors`, gated)
+- **Z-Image-Turbo SVDQuant FP4** — [`nunchaku-ai/nunchaku-z-image-turbo`](https://huggingface.co/nunchaku-ai/nunchaku-z-image-turbo) (`svdq-fp4_r128-z-image-turbo.safetensors`, `svdq-fp4_r32-z-image-turbo.safetensors`)
+
+**FLUX.2 Klein 9B NVFP4 (edit) — eager, 1024x2048 (distilled, 4 steps)**
+
+Speedup is vs the BF16 eager baseline (10.144s, top table).
+
+| Method | Time (s) | Speedup |
+|--------|----------|---------|
+| Eager NVFP4 `.safetensors` | 5.934 | 1.71x |
+| Eager NVFP4 `.safetensors` + SageAttention3 | 3.226 | 3.14x |
+
+> The SageAttention3 rows use the eager `sageattn3` kernel (and base
+> `sageattention` for the KJNodes `Patch Sage Attention KJ` path) on consumer
+> Blackwell — built from source per the SageAttention repo. These are an external
+> eager baseline, separate from the Qlip engines.
+
+**Z-Image-Turbo SVDQuant FP4 — eager**
+
+| Method | Variant | Time (s) | Speedup |
+|--------|---------|----------|---------|
+| Eager SVDQuant FP4 `.safetensors` | r128 | _TBD_ | _TBD_ |
+| Eager SVDQuant FP4 `.safetensors` + SageAttention3 | r128 | _TBD_ | _TBD_ |
+| Eager SVDQuant FP4 `.safetensors` | r32 | _TBD_ | _TBD_ |
+| Eager SVDQuant FP4 `.safetensors` + SageAttention3 | r32 | _TBD_ | _TBD_ |
+
+#### FLUX.2 Klein 9B (edit) — B200
+
+| Method | Time (s) | Speedup |
+|--------|----------|---------|
+| Eager (PyTorch) | _TBD_ | 1.0x |
+| **Qlip FP8-dynamic + LoRA** | _TBD_ | _TBD_ |
+| **Qlip NVFP4 + LoRA** | _TBD_ | _TBD_ |
+
+#### Z-Image-Turbo 6B — B200
+
+| Method | Time (s) | Speedup |
+|--------|----------|---------|
+| Eager (PyTorch) | _TBD_ | 1.0x |
+| **Qlip FP8-dynamic + LoRA** | _TBD_ | _TBD_ |
+| **Qlip NVFP4 + LoRA** | _TBD_ | _TBD_ |
+
+#### LTX-Video 2 19B (i2v) — B200
+
+| Method | Time (s) | Speedup |
+|--------|----------|---------|
+| Eager (PyTorch) | _TBD_ | 1.0x |
+| **Qlip FP8-dynamic + LoRA** | _TBD_ | _TBD_ |
+| **Qlip NVFP4 + LoRA** | _TBD_ | _TBD_ |
+
+#### Qwen Image Edit 20B — B200
+
+| Method | Time (s) | Speedup |
+|--------|----------|---------|
+| Eager (PyTorch) | _TBD_ | 1.0x |
+| **Qlip FP8-dynamic + LoRA** | _TBD_ | _TBD_ |
+| **Qlip NVFP4 + LoRA** | _TBD_ | _TBD_ |
+
+#### LTX-Video 2.3 22B (t2v) — B200
+
+| Method | Time (s) | Speedup |
+|--------|----------|---------|
+| Eager (PyTorch) | _TBD_ | 1.0x |
+| **Qlip FP8-dynamic + LoRA** | _TBD_ | _TBD_ |
+| **Qlip NVFP4 + LoRA** | _TBD_ | _TBD_ |
+
+> Routing: **≤14B → 5090, ≥19B → B200**. **FLUX.2 Klein on Blackwell is built in
+> image-edit mode** (`--edit --max-ref-images 1`) — unlike the H100 engines, which
+> are plain text-to-image (use the edit workflow with the Blackwell Klein engines).
+> **LTX-2 (i2v) and LTX-2.3 (t2v) are both kept** — different tasks, not redundant.
+> **Wan 2.2 is not part of this Blackwell round.** FP4 attention is **5090-only**
+> (the SageAttention3 kernel targets sm_120a; B200 keeps FP8/BF16 attention). New
+> precompiled-engine `hf_repo` paths (e.g. `.../models/RTX5090/...`,
+> `.../models/B200/...`) will be published alongside the existing `H100` ones.
+
+> **⚠ ComfyUI commit for ALL Blackwell engines — `b615af1c`.** Unlike the H100
+> engines (which use a mix of `048dd2f3` for FLUX.2 Klein / LTX-2 / Z-Image and
+> `b615af1c` for LTX-2.3 / Qwen / Wan), **every Blackwell engine — on both the
+> RTX 5090 and the B200 — is compiled against ComfyUI `b615af1c`**, including
+> FLUX.2 Klein and Z-Image-Turbo. Engines are tied to the ComfyUI block structure,
+> so to run a Blackwell engine you must `git checkout b615af1c` in your ComfyUI
+> (it is backwards-compatible with the older models). Compile and inference must use
+> the same commit. _(Verified on the 5090 build pod: `v0.18.1-53-gb615af1c`.)_
+
 ## Installation
 
 ### Prerequisites
@@ -226,6 +374,23 @@ pip install -r custom_nodes/ComfyUI-Qlip/requirements.txt
 
 This installs `qlip.core[nvidia]` from the TheStage AI package registry.
 
+> **Which `requirements.txt`?** Two are shipped, for two different GPU generations:
+>
+> | File | Target | torch | CUDA | `tensorrt-cu12` | qlip extra |
+> |------|--------|-------|------|----------|-----------|
+> | [`requirements.txt`](requirements.txt) | **H100 / Hopper / Ada (CUDA 12)** | 2.9.1 | 12.x | 10.13.3.9 | `qlip.core[nvidia]` |
+> | [`requirements_new.txt`](requirements_new.txt) | **Blackwell (5090 sm_120a / B200 sm_100, CUDA 13)** | 2.12.0 (cu130) | 13.0 | 10.15.1.29 | `qlip.core[blackwell]` |
+>
+> Blackwell needs CUDA 13, the `tensorrt-cu12` ≥ 10.13 wheel (FP4 support), and the
+> `blackwell` qlip extra. Install PyTorch from the cu130 index **first**, then the
+> requirements file (see the header note inside `requirements_new.txt`).
+>
+> Key Blackwell pins (full list in `requirements_new.txt`): torch 2.12.0+cu130 /
+> torchvision 0.27.0 (from the cu130 index), `tensorrt-cu12` 10.15.1.29, onnx 1.20.1
+> / onnxscript 0.7.0, diffusers 0.38.0, transformers 5.10.2. The hard requirements
+> for NVFP4 are **CUDA 13 + `tensorrt-cu12` ≥ 10.15 + an FP4-capable qlip** (one that
+> exposes `NVIDIA_NVFP4_W4A4`).
+
 ### Step 3: Setup TheStage API token
 
 Get your token at [app.thestage.ai](https://app.thestage.ai). Required for Qlip engine access.
@@ -252,7 +417,7 @@ bash custom_nodes/ComfyUI-Qlip/scripts/download_ltx_2_3_models.sh
 bash custom_nodes/ComfyUI-Qlip/scripts/download_qwen_image_edit_models.sh
 ```
 
-FLUX.2 Klein is a gated model — requires `huggingface-cli login` and license acceptance. HuggingFace cache defaults to `/workspace/cache` (override with `HF_HUB_CACHE`). Scripts skip already-downloaded files.
+FLUX.2 Klein is a gated model — requires `huggingface-cli login` and license acceptance. Override the HuggingFace cache location with `HF_HUB_CACHE` if needed. Scripts skip already-downloaded files.
 
 ### Step 4: Launch ComfyUI
 
@@ -280,6 +445,41 @@ pip install "sglang[diffusion]"
 ```bash
 pip install flash-attn --no-build-isolation
 ```
+
+### (Required for FP4-attention engines) Build the `fp4attn` plugin — RTX 5090 only
+
+> **Extra step — read this if you use any `…-fp4attn…` engine.** FP4-attention
+> engines contain a `QlipFP4Attention` plugin node. Unlike plain FP8/NVFP4 engines
+> (which load with just `qlip.core[nvidia]`), an fp4-attention engine **will not
+> load** until the `fp4attn` plugin is available — the loader raises an actionable
+> error otherwise. The plugin is **RTX 5090 / consumer Blackwell (sm_120a) only**
+> (its kernel targets `sm_120a`; it does **not** build/run on H100 sm_90 or B200
+> sm_100). Plain FP8 / NVFP4 (no fp4-attn) engines need none of this.
+
+Prerequisites: CUDA 13 toolkit (`nvcc`), `tensorrt-cu12` ≥ 10.15, PyTorch
+2.11+cu13x. The plugin is **self-contained** — its FP4 attention CUDA kernel is
+compiled into the plugin `.so` (vendored build), so it needs **no** separate
+SageAttention package at build or run time.
+
+```bash
+# 1. Bootstrap build prerequisites (downloads TRT C++ headers + CUTLASS source,
+#    checks nvcc/ninja). Ships with qlip.core.
+qlip-setup-plugins          # or: python -m qlip.plugins setup
+
+# 2. The plugin builds JIT on first import (~30-90s nvcc, cached afterwards). Verify:
+python -c "import torch; from qlip.plugins.fp4attn import ensure_plugin_registered; \
+           ensure_plugin_registered(); print('fp4attn plugin OK')"
+```
+
+If anything is missing, `ensure_plugin_registered()` prints exactly what to fix and
+points back at `qlip-setup-plugins` (see `qlip/plugins/BUILD.md` /
+`qlip/plugins/README.md` in the qlip package). At inference, ComfyUI's
+`QlipEnginesLoader` calls `ensure_plugin_registered()` automatically — once the
+plugin is built, fp4-attn engines just work.
+
+> SageAttention3 is a **separate, optional** thing — only for the eager-PyTorch
+> attention path (KJNodes `Patch Sage Attention KJ`), not for these compiled
+> engines. The `fp4attn` plugin does not depend on it.
 
 ## Precompiled Engines
 
@@ -429,7 +629,7 @@ bash custom_nodes/ComfyUI-Qlip/scripts/download_ltx_2_3_models.sh
 bash custom_nodes/ComfyUI-Qlip/scripts/download_qwen_image_edit_models.sh
 ```
 
-Scripts skip already-downloaded files, so they are safe to re-run. HuggingFace cache defaults to `/workspace/cache` — override with `HF_HUB_CACHE`.
+Scripts skip already-downloaded files, so they are safe to re-run. Override the HuggingFace cache location with `HF_HUB_CACHE` if needed.
 
 ### Basic (no LoRA)
 

@@ -396,6 +396,10 @@ class QlipEnginesLoader:
                 QlipLoraModule.setup(
                     dm, group.block_prefix, group.config, group.packed,
                 )
+                # No load-time snapshot needed: _disable_lora snapshots the
+                # active values to CPU on demand (before it zeroes in place),
+                # and restore copies them back in place. Avoids a redundant
+                # multi-GB CPU copy of the LoRA at every load.
                 print(f"[qlip] LoRA wrapper: "
                       f"{group.num_blocks} {group.block_prefix}")
 
@@ -478,17 +482,52 @@ class QlipEnginesLoader:
 
     @staticmethod
     def _disable_lora(groups):
-        """Disable LoRA by replacing packed tensors with rank-1 zero tensors.
+        """Disable LoRA by ZEROING the packed tensors IN PLACE (keeping rank).
 
-        Uses rank=1 so QLIP selects the smallest optimization profile,
-        minimizing LoRA MatMul overhead when LoRA is not active.
+        Memory model: this runs mid-graph when the engines already fill VRAM
+        (~21GB/31GB). The old approach replaced each buffer with a rank-1 zero
+        tensor — which frees the active buffer but then re-enable must
+        RE-ALLOCATE the full-rank tensor on a GPU with no headroom → OOM at
+        restore. Zeroing in place keeps the existing rank-N buffer, so BOTH
+        disable and re-enable are pure in-place ops with ZERO new allocation —
+        OOM-proof. Tradeoff: disabled inference runs the rank-N profile (a zero
+        LoRA matmul) instead of the rank-1 min profile, i.e. slightly slower
+        when off; acceptable vs crashing.
+
+        The active values are snapshotted to CPU first so re-enable can restore
+        them via copy_ (also in place).
         """
         for g in groups:
-            for i, packed in enumerate(g.packed):
-                g.packed[i] = torch.zeros(
-                    packed.shape[0], 1, packed.shape[2], packed.shape[3],
-                    device=packed.device, dtype=packed.dtype,
-                )
+            # Snapshot current ACTIVE values to CPU before zeroing (skip if the
+            # buffer is already all-zero state — don't clobber a good snapshot).
+            already_disabled = getattr(g, "_lora_disabled", False)
+            if g.packed and not already_disabled:
+                g._packed_active = [p.detach().to("cpu") for p in g.packed]
+            for packed in g.packed:
+                packed.zero_()          # in place — no alloc, rank unchanged
+            g._lora_disabled = True
+
+    @staticmethod
+    def _restore_lora(groups) -> bool:
+        """Restore the active LoRA values snapshotted by _disable_lora, IN
+        PLACE (copy_ into the existing rank-N buffer). Returns True if anything
+        was restored.
+
+        Because _disable_lora keeps the rank-N buffer (just zeroes it), the
+        buffer is already the right shape — restore is a pure copy_ with ZERO
+        new allocation, so it can't OOM even with the engines filling VRAM.
+        """
+        restored = False
+        for g in groups:
+            saved = getattr(g, "_packed_active", None)
+            if not saved or not g.packed:
+                continue
+            for i in range(len(g.packed)):
+                # shapes match by construction (rank preserved on disable)
+                g.packed[i].copy_(saved[i].to(g.packed[i].device))
+            g._lora_disabled = False
+            restored = True
+        return restored
 
     @staticmethod
     def _compute_lora_key(lora_stack):
@@ -543,6 +582,12 @@ class QlipEnginesLoader:
                 g.packed[:] = new_packed
 
             g.manager.clear_weights()
+            # A swap installs fresh ACTIVE weights → clear the disabled flag and
+            # invalidate any stale disable-snapshot, so a later disable snapshots
+            # THESE values (not a previous lora's).
+            g._lora_disabled = False
+            if hasattr(g, "_packed_active"):
+                del g._packed_active
 
         print(f"[qlip] LoRA swapped: rank={used_rank}, "
               f"{len(lora_stack)} file(s)")
@@ -951,6 +996,15 @@ class QlipLoraSwitch:
             )
             print("[qlip] QlipLoraSwitch: LoRA swapped")
         else:
-            print("[qlip] QlipLoraSwitch: LoRA enabled (keeping current)")
+            # enable=True, no lora_stack connected. If a previous disable
+            # stashed the active LoRA, restore it; otherwise there is nothing
+            # to enable (engine loaded without a LoRA stack → only zeros exist).
+            if QlipEnginesLoader._restore_lora(groups):
+                print("[qlip] QlipLoraSwitch: LoRA re-enabled (restored "
+                      "previously-disabled LoRA)")
+            else:
+                print("[qlip] QlipLoraSwitch: LoRA enable requested but no "
+                      "LoRA to restore (connect a lora_stack, or it was never "
+                      "loaded). Keeping current state.")
 
         return (patched_model,)
