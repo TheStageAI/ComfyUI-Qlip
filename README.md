@@ -228,10 +228,11 @@ at 1024x2048.
 
 | Method | Time (s) | Speedup |
 |--------|----------|---------|
-| Eager (PyTorch) | _TBD_ | 1.0x |
-| **Qlip FP8-dynamic + LoRA** | _TBD_ | _TBD_ |
-| **Qlip FP8-static + LoRA** | _TBD_ | _TBD_ |
-| **Qlip NVFP4 + LoRA** | _TBD_ | _TBD_ |
+| Eager (PyTorch) | 2.333 | 1.0x |
+| **Qlip FP8-dynamic + LoRA** | 1.644 | 1.42x |
+| **Qlip NVFP4 + LoRA** | 1.143 | 2.04x |
+| **Qlip NVFP4 + FP4-attention + LoRA** | 1.017 | 2.29x |
+| **Qlip NVFP4 + FP4-attention (no LoRA)** | 0.884 | 2.64x |
 
 #### Reference: external NVFP4 `.safetensors` (eager, RTX 5090)
 
@@ -242,7 +243,7 @@ consumer Blackwell). Order: NVFP4 alone, then + SageAttention3.
 
 Checkpoints:
 - **FLUX.2 Klein 9B NVFP4** — [`black-forest-labs/FLUX.2-klein-9b-nvfp4`](https://huggingface.co/black-forest-labs/FLUX.2-klein-9b-nvfp4) (`flux-2-klein-9b-nvfp4.safetensors`, gated)
-- **Z-Image-Turbo SVDQuant FP4** — [`nunchaku-ai/nunchaku-z-image-turbo`](https://huggingface.co/nunchaku-ai/nunchaku-z-image-turbo) (`svdq-fp4_r128-z-image-turbo.safetensors`, `svdq-fp4_r32-z-image-turbo.safetensors`)
+- **Z-Image-Turbo SVDQuant FP4** — [`nunchaku-ai/nunchaku-z-image-turbo`](https://huggingface.co/nunchaku-ai/nunchaku-z-image-turbo) (`svdq-fp4_r128-z-image-turbo.safetensors`, `svdq-fp4_r32-z-image-turbo.safetensors`). These load **only via the nunchaku custom node + `nunchaku` runtime package** (SVDQuant diffusers-layout weights). A plain `UNETLoader` fails with `KeyError: noise_refiner.0.attention.to_k.weight` — the checkpoint stores unfused `to_q/to_k/to_v` while ComfyUI's Z-Image expects fused `attention.qkv`.
 
 **FLUX.2 Klein 9B NVFP4 (edit) — eager, 1024x2048 (distilled, 4 steps)**
 
@@ -252,20 +253,29 @@ Speedup is vs the BF16 eager baseline (10.144s, top table).
 |--------|----------|---------|
 | Eager NVFP4 `.safetensors` | 5.934 | 1.71x |
 | Eager NVFP4 `.safetensors` + SageAttention3 | 3.226 | 3.14x |
+| Eager NVFP4 `.safetensors` + SageAttention3 (compiled) | 3.262 | 3.11x |
+
+> Compiling the SageAttention3 op gives **no gain on Klein** (3.262 s vs 3.226 s —
+> within noise / slightly worse), unlike Z-Image where it helps (see below). "compiled"
+> = `torch.compile` on the SageAttention3 op only, not the whole model.
 
 > The SageAttention3 rows use the eager `sageattn3` kernel (and base
 > `sageattention` for the KJNodes `Patch Sage Attention KJ` path) on consumer
 > Blackwell — built from source per the SageAttention repo. These are an external
 > eager baseline, separate from the Qlip engines.
 
-**Z-Image-Turbo SVDQuant FP4 — eager**
+**Z-Image-Turbo SVDQuant FP4 (r128) — eager**
 
-| Method | Variant | Time (s) | Speedup |
-|--------|---------|----------|---------|
-| Eager SVDQuant FP4 `.safetensors` | r128 | _TBD_ | _TBD_ |
-| Eager SVDQuant FP4 `.safetensors` + SageAttention3 | r128 | _TBD_ | _TBD_ |
-| Eager SVDQuant FP4 `.safetensors` | r32 | _TBD_ | _TBD_ |
-| Eager SVDQuant FP4 `.safetensors` + SageAttention3 | r32 | _TBD_ | _TBD_ |
+Speedup is vs the BF16 eager baseline (2.333s, Z-Image table above).
+
+| Method | Time (s) | Speedup |
+|--------|----------|---------|
+| Eager SVDQuant FP4 `.safetensors` | 0.988 | 2.36x |
+| Eager SVDQuant FP4 `.safetensors` + SageAttention3 | 0.951 | 2.45x |
+| Eager SVDQuant FP4 `.safetensors` + SageAttention3 (compiled) | 0.842 | 2.77x |
+
+> "compiled" = `torch.compile` applied to the **SageAttention3 attention op only**
+> (its `allow_compile` path), not the whole model.
 
 #### FLUX.2 Klein 9B (edit) — B200
 
