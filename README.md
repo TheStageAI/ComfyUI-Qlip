@@ -281,41 +281,17 @@ Speedup is vs the BF16 eager baseline (2.333s, Z-Image table above).
 
 | Method | Time (s) | Speedup |
 |--------|----------|---------|
-| Eager (PyTorch) | _TBD_ | 1.0x |
-| **Qlip FP8-dynamic + LoRA** | _TBD_ | _TBD_ |
-| **Qlip NVFP4 + LoRA** | _TBD_ | _TBD_ |
+| Eager (PyTorch) | 2.05 | 1.0x |
+| **Qlip FP8-dynamic + LoRA** | 1.59 | 1.29x |
+| **Qlip NVFP4 + LoRA** | 1.27 | 1.61x |
 
 #### Z-Image-Turbo 6B — B200
 
 | Method | Time (s) | Speedup |
 |--------|----------|---------|
-| Eager (PyTorch) | _TBD_ | 1.0x |
-| **Qlip FP8-dynamic + LoRA** | _TBD_ | _TBD_ |
-| **Qlip NVFP4 + LoRA** | _TBD_ | _TBD_ |
-
-#### LTX-Video 2 19B (i2v) — B200
-
-| Method | Time (s) | Speedup |
-|--------|----------|---------|
-| Eager (PyTorch) | _TBD_ | 1.0x |
-| **Qlip FP8-dynamic + LoRA** | _TBD_ | _TBD_ |
-| **Qlip NVFP4 + LoRA** | _TBD_ | _TBD_ |
-
-#### Qwen Image Edit 20B — B200
-
-| Method | Time (s) | Speedup |
-|--------|----------|---------|
-| Eager (PyTorch) | _TBD_ | 1.0x |
-| **Qlip FP8-dynamic + LoRA** | _TBD_ | _TBD_ |
-| **Qlip NVFP4 + LoRA** | _TBD_ | _TBD_ |
-
-#### LTX-Video 2.3 22B (t2v) — B200
-
-| Method | Time (s) | Speedup |
-|--------|----------|---------|
-| Eager (PyTorch) | _TBD_ | 1.0x |
-| **Qlip FP8-dynamic + LoRA** | _TBD_ | _TBD_ |
-| **Qlip NVFP4 + LoRA** | _TBD_ | _TBD_ |
+| Eager (PyTorch) | 0.611 | 1.0x |
+| **Qlip FP8-dynamic + LoRA** | 0.493 | 1.24x |
+| **Qlip NVFP4 + LoRA** | 0.435 | 1.40x |
 
 > Routing: **≤14B → 5090, ≥19B → B200**. **FLUX.2 Klein on Blackwell is built in
 > image-edit mode** (`--edit --max-ref-images 1`) — unlike the H100 engines, which
