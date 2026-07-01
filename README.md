@@ -10,6 +10,31 @@ Qlip compiles transformer blocks into optimized engines, delivering significant 
   <em>FLUX.2 Klein 9B with LoRA in ComfyUI. Just add the Qlip Engines Loader and Qlip LoRA Stack nodes to any existing workflow — works with any supported model and any sampler, as long as the compiled engines support the required input shapes.</em>
 </p>
 
+### Baseline vs Qlip — same output, much faster
+
+See for yourself: the baseline (eager PyTorch) and our Qlip engines produce
+almost the same image, but Qlip runs several times faster (NVFP4 + FP4-attention
+on RTX 5090). More side-by-side comparisons and metrics in the
+
+<table>
+  <tr>
+    <th>FLUX.2 Klein 9B — Baseline (BF16, 10.1 s)</th>
+    <th>FLUX.2 Klein 9B — Qlip (NVFP4 + FP4-attn, 2.8 s, 3.6×)</th>
+  </tr>
+  <tr>
+    <td><img src="assets/example_flux_klein_bf16.png" alt="FLUX.2 Klein baseline" width="380"></td>
+    <td><img src="assets/example_flux_klein_qlip_nvfp4.png" alt="FLUX.2 Klein Qlip NVFP4" width="380"></td>
+  </tr>
+  <tr>
+    <th>Z-Image-Turbo 6B — Baseline (eager, 2.3 s)</th>
+    <th>Z-Image-Turbo 6B — Qlip (NVFP4 + FP4-attn, 0.9 s, 2.6×)</th>
+  </tr>
+  <tr>
+    <td><img src="assets/example_zimage_eager.png" alt="Z-Image-Turbo baseline" width="380"></td>
+    <td><img src="assets/example_zimage_qlip_nvfp4.png" alt="Z-Image-Turbo Qlip NVFP4" width="380"></td>
+  </tr>
+</table>
+
 ## Updates
 
 **2026-04-15** — Wan 2.2 I2V + shared memory + runtime patches + API client
@@ -127,6 +152,10 @@ Image-to-video generation model. Two-stage pipeline: high-noise transformer gene
 Each transformer has its own engines directory and QlipEnginesLoader node. Set `shared_memory="wan"` on both loaders to share one GPU memory pool (reduces VRAM usage since the two transformers never run simultaneously).
 
 ## Benchmarks
+
+> **See also: [Quality & Performance Data Sheet](docs/quality/QUALITY.md)** — all
+> latency tables (H100 + Blackwell), Z-Image quality metrics, the ANNA size/quality
+> slider for FLUX.2 Klein, and visual comparisons. Raw data for presentations.
 
 All measurements: single image/video generation, batch size 1, H100, torch 2.8.0, **warm run** (second run, engines already loaded). Current precompiled engines include LoRA support, which adds minor overhead (~5-15%) compared to non-LoRA engines. Non-LoRA engines with faster inference will be available in a future release.
 

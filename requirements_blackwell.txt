@@ -1,0 +1,49 @@
+--extra-index-url https://thestage.jfrog.io/artifactory/api/pypi/pypi-thestage-ai-production/simple
+
+# ---------------------------------------------------------------------------
+# Blackwell (RTX 5090 sm_120a / B200 sm_100), CUDA 13, Python 3.12.
+# Pins below mirror the VERIFIED working build env on the 5090 pod
+# (/workspace/flux_klein/venv_cu13, captured 2026-06-16). See README.md
+# "Which requirements.txt?" for the env-diff table.
+# ---------------------------------------------------------------------------
+
+# Qlip core (compiler + inference + plugins). On the live pod this is the
+# fp4-capable build installed from git (TheStageAI/Qlip.Pytorch); the JFrog
+# wheel below is the released equivalent. Either must expose NVIDIA_NVFP4_W4A4.
+# (Andrey installs qlip MANUALLY on fresh pods — do not assume pip pulls it.)
+qlip.core[blackwell]
+
+# PyTorch (cu130 build — only on PyTorch's index). Install these FIRST, before
+# this file, from the cu130 index:
+#   pip install --pre torch==2.12.0 torchvision==0.27.0 torchaudio==2.12.0 \
+#       --index-url https://download.pytorch.org/whl/cu130
+# Listed here as comments only — mixing indexes in one file is fragile.
+# torch==2.12.0+cu130
+# torchvision==0.27.0
+# torchaudio==2.12.0
+
+# TensorRT 10.15 (Blackwell FP4 fusion needs >= 10.13). Note: the cu12 wheels
+# are what the pod actually has and they work on CUDA 13.
+tensorrt-cu12==10.15.1.29
+tensorrt-cu12-bindings==10.15.1.29
+tensorrt-cu12-libs==10.15.1.29
+
+# ONNX export & rewrite
+onnx==1.20.1
+onnxscript==0.7.0
+onnx-ir==0.2.1
+
+# Runtime helpers
+cupy-cuda12x==14.1.1
+polygraphy==0.50.3
+
+# diffusers / transformers (loader paths)
+diffusers==0.38.0
+transformers==5.10.2
+safetensors==0.8.0
+huggingface_hub==1.13.0
+sentencepiece==0.2.1
+numpy==2.4.6
+
+# fp4attn TRT plugin build needs the CUTLASS source tree (sm_120a only):
+#   git clone --branch v3.5.1 https://github.com/NVIDIA/cutlass.git /workspace/cutlass
