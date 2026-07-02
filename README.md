@@ -306,6 +306,43 @@ Speedup is vs the BF16 eager baseline (2.333s, Z-Image table above).
 > "compiled" = `torch.compile` applied to the **SageAttention3 attention op only**
 > (its `allow_compile` path), not the whole model.
 
+#### 🎬 Wan 2.2 I2V (14B) — RTX 5090
+
+**Real-time-class image-to-video on a single consumer card.** Wan 2.2 I2V is a
+two-expert pipeline — a **high-noise** transformer sketches the motion, a
+**low-noise** transformer refines it. We trained a LoRA that lets the **low-noise
+expert do the high-noise expert's job**, collapsing the pipeline so you run a
+single transformer and still get full-quality motion. That low→high LoRA is applied
+at runtime on top of our Qlip engine, and the whole thing is compiled to
+**NVFP4 + FP4-attention**: a full 20-clip run averaged **18.1 s/clip vs 38.1 s/clip**
+for the same model in BF16 eager — a **~2.1×** speedup, on a 32 GB RTX 5090 (the
+14B fits with headroom at FP4; BF16 fits too, but at half the speed).
+
+| Prompt (480×480, 81 frames, cfg 1.0) | Time / clip | Speedup |
+|---|---|---|
+| BF16 + LoRA (eager PyTorch) | 38.1 s | 1.0× |
+| **Qlip NVFP4 + FP4-attention + LoRA** | **18.1 s** | **2.1×** |
+
+_Median per-clip wall-time over a fixed 20-prompt batch (full pipeline: sampler +
+VAE decode + save), warm run, cold-start clip excluded._
+
+**Workflow:** [`workflows/video_wan2_2_14b_i2v_5090-qlip.json`](workflows/video_wan2_2_14b_i2v_5090-qlip.json)
+— load it in ComfyUI, point the `QlipEnginesLoader` at one of the engines below (or
+set `hf_repo`), and it already loads our low→high LoRA
+([`wan2.2-i2v-low-to-high-lora.safetensors`](https://huggingface.co/TheStageAI/Elastic-Wan2.2-I2V/blob/main/models/GeForce-RTX-5090/wan2.2-i2v-low-to-high-lora.safetensors))
+via the `QlipLoraStack`.
+
+**Two engine variants — pick by what you need today:**
+
+- **NVFP4 + FP4-attention** (the 18.1 s number above) — fastest, but the
+  `QlipFP4Attention` plugin node requires an updated `qlip` release. **These
+  engines cannot be used yet** — they will load once the plugin ships in a public
+  `qlip` update. See [FP4-attention plugin](#required-for-fp4-attention-engines-build-the-fp4attn-plugin--rtx-5090-only)
+  below.
+- **NVFP4 (no FP4-attention)** — **ready to use right now** with the current
+  `qlip.core[nvidia]`, no plugin build required. Slightly slower than the
+  FP4-attention variant but needs nothing extra, and still a large win over BF16.
+
 #### FLUX.2 Klein 9B (edit) — B200
 
 | Method | Time (s) | Speedup |
@@ -463,7 +500,16 @@ pip install flash-attn --no-build-isolation
 
 ### (Required for FP4-attention engines) Build the `fp4attn` plugin — RTX 5090 only
 
-> **Extra step — read this if you use any `…-fp4attn…` engine.** FP4-attention
+> ⚠️ **FP4-attention engines are not usable yet — wait for the next `qlip`
+> release.** The `QlipFP4Attention` plugin node they contain depends on a version
+> of the `fp4attn` plugin that is **not yet in a public `qlip` update**. Until that
+> update ships, any `…-fp4attn…` engine **will fail to load**. If you need Blackwell
+> speedups today, use the **plain NVFP4 (no FP4-attention)** engines — they run on
+> the current `qlip.core[nvidia]` with **no plugin build required** and are ready to
+> use now. The instructions below are how you build the plugin **once the qlip
+> update lands**.
+
+> **Extra step — read this once fp4-attention is supported.** FP4-attention
 > engines contain a `QlipFP4Attention` plugin node. Unlike plain FP8/NVFP4 engines
 > (which load with just `qlip.core[nvidia]`), an fp4-attention engine **will not
 > load** until the `fp4attn` plugin is available — the loader raises an actionable
@@ -471,10 +517,14 @@ pip install flash-attn --no-build-isolation
 > (its kernel targets `sm_120a`; it does **not** build/run on H100 sm_90 or B200
 > sm_100). Plain FP8 / NVFP4 (no fp4-attn) engines need none of this.
 
-Prerequisites: CUDA 13 toolkit (`nvcc`), `tensorrt-cu12` ≥ 10.15, PyTorch
-2.11+cu13x. The plugin is **self-contained** — its FP4 attention CUDA kernel is
-compiled into the plugin `.so` (vendored build), so it needs **no** separate
-SageAttention package at build or run time.
+**The plugin is built through `qlip` itself** — you don't clone or compile it by
+hand. `qlip` ships the source, bootstraps the build prerequisites, and JIT-compiles
+the `.so` on first import (cached afterwards). Prerequisites: CUDA 13 toolkit
+(`nvcc`), `tensorrt-cu12` ≥ 10.15, PyTorch 2.11+cu13x. The plugin is
+**self-contained** — its FP4 attention CUDA kernel is compiled into the plugin `.so`
+(vendored build), so it needs **no** separate SageAttention package at build or run
+time. (This only works once the fp4attn-supporting `qlip` update is installed —
+until then the build/import will not produce a loadable plugin.)
 
 ```bash
 # 1. Bootstrap build prerequisites (downloads TRT C++ headers + CUTLASS source,
@@ -485,6 +535,12 @@ qlip-setup-plugins          # or: python -m qlip.plugins setup
 python -c "import torch; from qlip.plugins.fp4attn import ensure_plugin_registered; \
            ensure_plugin_registered(); print('fp4attn plugin OK')"
 ```
+
+If anything is missing, `ensure_plugin_registered()` prints the exact fix. The full
+build reference (env vars, per-plugin requirements, troubleshooting) ships **inside
+the `qlip` package** as `qlip/plugins/BUILD.md` and `qlip/plugins/README.md` —
+`python -c "import qlip, pathlib; print(pathlib.Path(qlip.__file__).parent / 'plugins')"`
+prints their location.
 
 If anything is missing, `ensure_plugin_registered()` prints exactly what to fix and
 points back at `qlip-setup-plugins` (see `qlip/plugins/BUILD.md` /
@@ -514,8 +570,17 @@ Precompiled engines are hosted on HuggingFace. The **Qlip Engines Loader** node 
 | Qwen Image Edit BF16 + LoRA | `TheStageAI/Elastic-Qwen-Image-Edit:models/H100/qwen-image-edit-bf16_lora` |
 | Wan 2.2 I2V High-Noise FP8 + LoRA | `TheStageAI/Elastic-Wan2.2-I2V:models/H100/wan-i2v-high-noise-fp8_lora` |
 | Wan 2.2 I2V Low-Noise FP8 + LoRA | `TheStageAI/Elastic-Wan2.2-I2V:models/H100/wan-i2v-low-noise-fp8_lora` |
+| Wan 2.2 I2V NVFP4 + LoRA — **RTX 5090** (ready now) | `TheStageAI/Elastic-Wan2.2-I2V:models/GeForce-RTX-5090/wan-i2v-low-noise-nvfp4_lora` |
+| Wan 2.2 I2V NVFP4 + FP4-attention + LoRA — **RTX 5090** (needs qlip fp4attn update) | `TheStageAI/Elastic-Wan2.2-I2V:models/GeForce-RTX-5090/wan-i2v-low-noise-nvfp4-fp4attn_lora` |
 
 The format is `org/repo:path/to/engines`. Engines are downloaded once and cached.
+
+> **Wan 2.2 RTX 5090 engines** ship with our low→high LoRA
+> ([`wan2.2-i2v-low-to-high-lora.safetensors`](https://huggingface.co/TheStageAI/Elastic-Wan2.2-I2V/blob/main/models/GeForce-RTX-5090/wan2.2-i2v-low-to-high-lora.safetensors),
+> same folder). The **NVFP4** engine works today; the **NVFP4 + FP4-attention**
+> engine is faster (see the [Wan 2.2 RTX 5090 benchmark](#-wan-22-i2v-14b--rtx-5090))
+> but **won't load until the `fp4attn` plugin ships in a public qlip update**. Use
+> workflow [`workflows/video_wan2_2_14b_i2v_5090-qlip.json`](workflows/video_wan2_2_14b_i2v_5090-qlip.json).
 
 Alternatively, download manually with `huggingface-cli`:
 
