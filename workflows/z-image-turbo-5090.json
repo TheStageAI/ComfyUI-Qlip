@@ -659,7 +659,7 @@
       },
       "widgets_values": [
         "",
-        "TheStageAI/Elastic-Z-Image-Turbo:models/H100/z-image-turbo-fp8_lora",
+        "TheStageAI/Elastic-Z-Image-Turbo:models/GeForce-RTX-5090/z-image-turbo-nvfp4_lora",
         false,
         ""
       ]
