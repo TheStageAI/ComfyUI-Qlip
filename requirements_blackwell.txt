@@ -7,20 +7,25 @@
 # "Which requirements.txt?" for the env-diff table.
 # ---------------------------------------------------------------------------
 
-# Qlip core (compiler + inference + plugins). On the live pod this is the
-# fp4-capable build installed from git (TheStageAI/Qlip.Pytorch); the JFrog
-# wheel below is the released equivalent. Either must expose NVIDIA_NVFP4_W4A4.
-# (Andrey installs qlip MANUALLY on fresh pods — do not assume pip pulls it.)
-qlip.core[blackwell]
+# Qlip core — installed SEPARATELY, NOT from this file. The released
+# qlip.core[blackwell] wheel declares numpy<2 and pins torch to a cu12 build,
+# so `pip install qlip.core[blackwell]` inside this file would either fail to
+# resolve (numpy conflict) or DOWNGRADE torch 2.12+cu130 -> 2.9.1+cu12 and break
+# the Blackwell FP4 engines. Install it with --no-deps AFTER this file, so it
+# keeps the torch/numpy already installed here:
+#   pip install "qlip.core[blackwell]" --no-deps \
+#     --extra-index-url https://thestage.jfrog.io/artifactory/api/pypi/pypi-thestage-ai-production/simple
+# (The wheel's numpy<2 metadata is over-strict — it imports and runs fine on the
+# numpy 2.x pinned below. --no-deps is what makes this work.)
 
 # PyTorch (cu130 build — only on PyTorch's index). Install these FIRST, before
-# this file, from the cu130 index:
-#   pip install --pre torch==2.12.0 torchvision==0.27.0 torchaudio==2.12.0 \
+# this file, from the cu130 index (NOTE: torchaudio 2.12.0 is NOT on the cu130
+# index — omit it; ComfyUI runs fine without it):
+#   pip install --pre torch==2.12.0 torchvision==0.27.0 \
 #       --index-url https://download.pytorch.org/whl/cu130
 # Listed here as comments only — mixing indexes in one file is fragile.
 # torch==2.12.0+cu130
 # torchvision==0.27.0
-# torchaudio==2.12.0
 
 # TensorRT 10.15 (Blackwell FP4 fusion needs >= 10.13). Note: the cu12 wheels
 # are what the pod actually has and they work on CUDA 13.
