@@ -18,6 +18,49 @@ MAX_LORA_RANK = 256
 _custom_patch_cache = {}
 
 
+def _validate_diffusion_model_input(model, node_name: str):
+    """Raise a clear error if ``model`` is not a diffusion ModelPatcher.
+
+    QlipEnginesLoader/QlipLoraSwitch declare ``model: ("*",)`` to be
+    permissive about upstream node types, but they actually require a
+    ``comfy.model_patcher.ModelPatcher`` wrapping a diffusion model
+    (i.e. with ``.model.diffusion_model``). Passing a VAE, CLIP, or
+    raw safetensors dict triggers cryptic ``AttributeError: ... has no
+    attribute 'clone'`` deep inside this function. Surface the mismatch
+    early with an actionable message instead.
+    """
+    # ModelPatcher exposes .clone() and .model.diffusion_model; VAE/CLIP
+    # objects expose neither in that combination.
+    if not hasattr(model, "clone"):
+        type_name = type(model).__name__
+        # Common mistakes: VAE input, CLIP input, dict from a loader.
+        hint = ""
+        if type_name in ("VAE", "AutoencoderKL"):
+            hint = (" — looks like you connected a VAE output. "
+                    "QlipEnginesLoader is for the diffusion transformer. "
+                    "For a TRT-compiled VAE engine use QlipVaeLoader instead.")
+        elif type_name in ("CLIP", "SD1ClipModel", "SDXLClipModel"):
+            hint = (" — looks like you connected a CLIP output. "
+                    "QlipEnginesLoader expects the diffusion MODEL output, "
+                    "not a CLIP encoder.")
+        elif isinstance(model, dict):
+            hint = (" — got a dict (raw checkpoint?). "
+                    "Run it through UNETLoader / CheckpointLoaderSimple first.")
+        raise TypeError(
+            f"{node_name}: 'model' input must be a diffusion ModelPatcher "
+            f"(got {type_name}, no .clone() method).{hint}"
+        )
+    # Now safe to inspect .model.diffusion_model.
+    inner = getattr(model, "model", None)
+    if inner is None or not hasattr(inner, "diffusion_model"):
+        type_name = type(model).__name__
+        raise TypeError(
+            f"{node_name}: 'model' input is a {type_name} but does not "
+            f"expose .model.diffusion_model. Expected a diffusion "
+            f"ModelPatcher (output of UNETLoader / CheckpointLoaderSimple)."
+        )
+
+
 def _get_custom_patch_module(engines_dir):
     """Load and cache the qlip_patch.py module from engines directory."""
     import importlib.util
@@ -195,6 +238,7 @@ class QlipEnginesLoader:
                   "passing model through unchanged")
             return (model,)
 
+        _validate_diffusion_model_input(model, "QlipEnginesLoader")
         _add_qlip_to_path()
 
         # Resolve engines directory
@@ -278,11 +322,41 @@ class QlipEnginesLoader:
         if not engines_cached:
             print(f"[qlip] Loading QLIP engines from {engines_dir}...")
 
+            # Register custom TRT plugins required by some engines BEFORE
+            # auto_setup() deserializes any engine. Engines compiled with
+            # --fp4-attention contain a QlipFP4Attention IPluginV3 node whose
+            # creator must be in TRT's plugin registry at deserialize time.
+            # This call is idempotent and graceful — if the plugin can't be
+            # built/loaded (wrong GPU, missing sageattn3, etc.) the engine
+            # load will surface its own clearer error than the cryptic
+            # "Cannot find plugin" from TRT.
+            self._maybe_register_qlip_plugins(engines_dir)
+
             from qlip.inference.nvidia import NvidiaInferenceManager
             from qlip.inference.nvidia.session import NvidiaMemoryManager
 
             imanager = NvidiaInferenceManager(model=dm, workspace=engines_dir)
             imanager.auto_setup()
+
+            # All sessions share ONE CUDA stream.
+            #
+            # Why: NvidiaInferenceSession.set_cuda_stream() creates a fresh
+            # torch.cuda.Stream() per session by default. With 32 engines in
+            # a FLUX transformer, that's 32 distinct streams. TRT's
+            # cudaMallocAsync workspace pool is stream-bound, so when engine
+            # B reuses a slab that engine A's plugin is still writing to
+            # async, we get cudaErrorIllegalAddress. The defensive
+            # cudaStreamSynchronize in FP4Attn enqueue() was masking this.
+            #
+            # Single shared stream + CUDA stream-ordering = correct
+            # sequencing without explicit syncs, AND CUDA-Graph captureable.
+            import torch
+            shared_stream = torch.cuda.Stream()
+            for mod in imanager.modules:
+                mod.session.set_cuda_stream(shared_stream)
+            print(f"[qlip] Shared CUDA stream "
+                  f"(ptr=0x{shared_stream.cuda_stream:x}) "
+                  f"set on {len(imanager.modules)} sessions")
 
             # Create or reuse memory manager.
             # When shared_memory is set, all loaders in the same group
@@ -322,6 +396,10 @@ class QlipEnginesLoader:
                 QlipLoraModule.setup(
                     dm, group.block_prefix, group.config, group.packed,
                 )
+                # No load-time snapshot needed: _disable_lora snapshots the
+                # active values to CPU on demand (before it zeroes in place),
+                # and restore copies them back in place. Avoids a redundant
+                # multi-GB CPU copy of the LoRA at every load.
                 print(f"[qlip] LoRA wrapper: "
                       f"{group.num_blocks} {group.block_prefix}")
 
@@ -404,17 +482,52 @@ class QlipEnginesLoader:
 
     @staticmethod
     def _disable_lora(groups):
-        """Disable LoRA by replacing packed tensors with rank-1 zero tensors.
+        """Disable LoRA by ZEROING the packed tensors IN PLACE (keeping rank).
 
-        Uses rank=1 so QLIP selects the smallest optimization profile,
-        minimizing LoRA MatMul overhead when LoRA is not active.
+        Memory model: this runs mid-graph when the engines already fill VRAM
+        (~21GB/31GB). The old approach replaced each buffer with a rank-1 zero
+        tensor — which frees the active buffer but then re-enable must
+        RE-ALLOCATE the full-rank tensor on a GPU with no headroom → OOM at
+        restore. Zeroing in place keeps the existing rank-N buffer, so BOTH
+        disable and re-enable are pure in-place ops with ZERO new allocation —
+        OOM-proof. Tradeoff: disabled inference runs the rank-N profile (a zero
+        LoRA matmul) instead of the rank-1 min profile, i.e. slightly slower
+        when off; acceptable vs crashing.
+
+        The active values are snapshotted to CPU first so re-enable can restore
+        them via copy_ (also in place).
         """
         for g in groups:
-            for i, packed in enumerate(g.packed):
-                g.packed[i] = torch.zeros(
-                    packed.shape[0], 1, packed.shape[2], packed.shape[3],
-                    device=packed.device, dtype=packed.dtype,
-                )
+            # Snapshot current ACTIVE values to CPU before zeroing (skip if the
+            # buffer is already all-zero state — don't clobber a good snapshot).
+            already_disabled = getattr(g, "_lora_disabled", False)
+            if g.packed and not already_disabled:
+                g._packed_active = [p.detach().to("cpu") for p in g.packed]
+            for packed in g.packed:
+                packed.zero_()          # in place — no alloc, rank unchanged
+            g._lora_disabled = True
+
+    @staticmethod
+    def _restore_lora(groups) -> bool:
+        """Restore the active LoRA values snapshotted by _disable_lora, IN
+        PLACE (copy_ into the existing rank-N buffer). Returns True if anything
+        was restored.
+
+        Because _disable_lora keeps the rank-N buffer (just zeroes it), the
+        buffer is already the right shape — restore is a pure copy_ with ZERO
+        new allocation, so it can't OOM even with the engines filling VRAM.
+        """
+        restored = False
+        for g in groups:
+            saved = getattr(g, "_packed_active", None)
+            if not saved or not g.packed:
+                continue
+            for i in range(len(g.packed)):
+                # shapes match by construction (rank preserved on disable)
+                g.packed[i].copy_(saved[i].to(g.packed[i].device))
+            g._lora_disabled = False
+            restored = True
+        return restored
 
     @staticmethod
     def _compute_lora_key(lora_stack):
@@ -469,6 +582,12 @@ class QlipEnginesLoader:
                 g.packed[:] = new_packed
 
             g.manager.clear_weights()
+            # A swap installs fresh ACTIVE weights → clear the disabled flag and
+            # invalidate any stale disable-snapshot, so a later disable snapshots
+            # THESE values (not a previous lora's).
+            g._lora_disabled = False
+            if hasattr(g, "_packed_active"):
+                del g._packed_active
 
         print(f"[qlip] LoRA swapped: rank={used_rank}, "
               f"{len(lora_stack)} file(s)")
@@ -608,6 +727,119 @@ class QlipEnginesLoader:
         return group
 
     # ------------------------------------------------------------------
+    # Internal: TRT plugin registration
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _maybe_register_qlip_plugins(engines_dir):
+        """Register qlip custom TRT plugins before engine deserialize.
+
+        Supported plugins:
+          - QlipFP4Attention (qlip.plugins.fp4attn) — required by engines
+            compiled with ``--fp4-attention``.
+          - QlipLoRAFused (qlip.plugins.lora_fused) — required by engines
+            compiled with ``--lora-fused``.
+
+        Idempotent. Failure is logged at WARNING level and not raised — the
+        subsequent engine load will produce a clearer plugin-not-found error
+        if the engine actually needs the plugin. Engines without custom ops
+        load fine without this call.
+        """
+        # Cache so we only attempt registration once per process.
+        if getattr(QlipEnginesLoader, "_qlip_plugins_registered", False):
+            return
+
+        # --- QlipFP4Attention ---
+        try:
+            from qlip.plugins.fp4attn import ensure_plugin_registered as _ensure_fp4attn
+            try:
+                ok = _ensure_fp4attn(verbose=False)
+                if ok:
+                    logger.info("Registered QlipFP4Attention plugin with TRT")
+                else:
+                    logger.warning(
+                        "QlipFP4Attention plugin registration returned False — "
+                        "engines using FP4 attention may fail to deserialize."
+                    )
+            except Exception as e:
+                logger.warning(
+                    f"QlipFP4Attention plugin registration failed: {e}. "
+                    f"This is fine for engines without --fp4-attention; "
+                    f"FP4-attention engines will fail at deserialize."
+                )
+        except ImportError as e:
+            logger.debug(f"qlip.plugins.fp4attn not available ({e}); "
+                         f"engines that need it will fail at deserialize")
+
+        # --- QlipLoRAFused ---
+        try:
+            from qlip.plugins.lora_fused import ensure_plugin_registered as _ensure_lora_fused
+            try:
+                ok = _ensure_lora_fused(verbose=False)
+                if ok:
+                    logger.info("Registered QlipLoRAFused plugin with TRT")
+                else:
+                    logger.warning(
+                        "QlipLoRAFused plugin registration returned False — "
+                        "engines using --lora-fused may fail to deserialize."
+                    )
+            except Exception as e:
+                logger.warning(
+                    f"QlipLoRAFused plugin registration failed: {e}. "
+                    f"This is fine for engines without --lora-fused; "
+                    f"lora-fused engines will fail at deserialize."
+                )
+        except ImportError as e:
+            logger.debug(f"qlip.plugins.lora_fused not available ({e}); "
+                         f"engines that need it will fail at deserialize")
+
+        # --- QlipLoRAGrouped ---
+        try:
+            from qlip.plugins.lora_grouped import ensure_plugin_registered as _ensure_lora_grouped
+            try:
+                ok = _ensure_lora_grouped(verbose=False)
+                if ok:
+                    logger.info("Registered QlipLoRAGrouped plugin with TRT")
+                else:
+                    logger.warning(
+                        "QlipLoRAGrouped plugin registration returned False — "
+                        "engines using --lora-grouped may fail to deserialize."
+                    )
+            except Exception as e:
+                logger.warning(
+                    f"QlipLoRAGrouped plugin registration failed: {e}. "
+                    f"This is fine for engines without --lora-grouped; "
+                    f"lora-grouped engines will fail at deserialize."
+                )
+        except ImportError as e:
+            logger.debug(f"qlip.plugins.lora_grouped not available ({e}); "
+                         f"engines that need it will fail at deserialize")
+
+        # --- QlipLoRAUnpack ---
+        try:
+            from qlip.plugins.lora_unpack import ensure_plugin_registered as _ensure_lora_unpack
+            try:
+                ok = _ensure_lora_unpack(verbose=False)
+                if ok:
+                    logger.info("Registered QlipLoRAUnpack plugin with TRT")
+                else:
+                    logger.warning(
+                        "QlipLoRAUnpack plugin registration returned False — "
+                        "engines using --lora-unpack may fail to deserialize."
+                    )
+            except Exception as e:
+                logger.warning(
+                    f"QlipLoRAUnpack plugin registration failed: {e}. "
+                    f"This is fine for engines without --lora-unpack; "
+                    f"lora-unpack engines will fail at deserialize."
+                )
+        except ImportError as e:
+            logger.debug(f"qlip.plugins.lora_unpack not available ({e}); "
+                         f"engines that need it will fail at deserialize")
+
+        QlipEnginesLoader._qlip_plugins_registered = True
+
+    # ------------------------------------------------------------------
     # Internal: model-specific patches
     # ------------------------------------------------------------------
 
@@ -732,7 +964,19 @@ class QlipLoraSwitch:
     FUNCTION = "switch_lora"
     CATEGORY = "qlip"
 
+    @classmethod
+    def IS_CHANGED(cls, **kwargs):
+        # This node's effect is an in-place mutation of the shared LoRA packed
+        # tensors on the (cached) diffusion model — NOT captured by the output
+        # object identity. With identical inputs ComfyUI would cache the result
+        # and skip switch_lora entirely, so on a second run the LoRA state set
+        # by a previous run (e.g. disabled/rank-1) would persist and the LoRA
+        # would appear "stuck". Returning NaN (which never compares equal to
+        # itself) forces ComfyUI to always re-execute, re-applying the swap.
+        return float("nan")
+
     def switch_lora(self, model, enable=True, lora_stack=None):
+        _validate_diffusion_model_input(model, "QlipLoraSwitch")
         patched_model = model.clone()
         dm = patched_model.model.diffusion_model
 
@@ -752,6 +996,15 @@ class QlipLoraSwitch:
             )
             print("[qlip] QlipLoraSwitch: LoRA swapped")
         else:
-            print("[qlip] QlipLoraSwitch: LoRA enabled (keeping current)")
+            # enable=True, no lora_stack connected. If a previous disable
+            # stashed the active LoRA, restore it; otherwise there is nothing
+            # to enable (engine loaded without a LoRA stack → only zeros exist).
+            if QlipEnginesLoader._restore_lora(groups):
+                print("[qlip] QlipLoraSwitch: LoRA re-enabled (restored "
+                      "previously-disabled LoRA)")
+            else:
+                print("[qlip] QlipLoraSwitch: LoRA enable requested but no "
+                      "LoRA to restore (connect a lora_stack, or it was never "
+                      "loaded). Keeping current state.")
 
         return (patched_model,)
