@@ -37,6 +37,26 @@ on RTX 5090). More side-by-side comparisons and metrics in the
 
 ## Updates
 
+**2026-07-02** — Blackwell (RTX 5090 / B200) engines + Wan 2.2 low→high LoRA
+- **Blackwell engine rollout** — recompiled the lineup for Blackwell with **NVFP4
+  (FP4)** weights (~4× smaller than BF16, native Blackwell fast path) plus **FP4
+  attention** on the 5090:
+  - **FLUX.2 Klein 9B (edit)** — RTX 5090 (FP8-dynamic/static, NVFP4, NVFP4 + FP4-attn)
+    and B200 (FP8-dynamic, NVFP4). Up to **3.6×** over BF16 eager on the 5090.
+  - **Z-Image-Turbo 6B** — RTX 5090 and B200 (FP8-dynamic, NVFP4, NVFP4 + FP4-attn).
+  - **Wan 2.2 I2V 14B** — RTX 5090 (NVFP4, NVFP4 + FP4-attn), encrypted, LoRA-enabled.
+  See the [Blackwell benchmarks](#blackwell-engines--planned-in-progress) for the full tables.
+- **Wan 2.2 low→high LoRA** — we trained a LoRA that lets the Wan 2.2 low-noise
+  expert do the high-noise expert's job, collapsing the two-expert pipeline into a
+  **single transformer**. Measured **18.1 s/clip vs 38.1 s BF16 (~2.1×)** at
+  480×480 / 81 frames. Published as
+  [`wan2.2-i2v-low-to-high-lora.safetensors`](https://huggingface.co/TheStageAI/Elastic-Wan2.2-I2V/tree/main/models/GeForce-RTX-5090);
+  workflow `workflows/video_wan2_2_14b_i2v_5090-qlip.json`.
+- **Blackwell install docs** — exact 3-step order (torch cu130 → `requirements_blackwell.txt`
+  → `qlip.core[blackwell] --no-deps`), plus the ComfyUI-`requirements.txt`-installs-cu12-torch
+  gotcha. The **NVFP4** engines run on today's `qlip.core[blackwell]`; the
+  **FP4-attention** engines need the upcoming `fp4attn` plugin update.
+
 **2026-04-15** — Wan 2.2 I2V + shared memory + runtime patches + API client
 - **Wan 2.2 I2V (14B)** — image-to-video, FP8 + LoRA, two-stage pipeline (high-noise + low-noise), dynamic shapes up to 640x640
 - **Shared memory** — new `shared_memory` parameter in QlipEnginesLoader. Multiple loaders with the same group name share one GPU memory pool (size = max, not sum). Enables Wan 2.2 two-transformer setup without doubling VRAM
@@ -407,6 +427,25 @@ git clone https://github.com/TheStageAI/ComfyUI-Qlip
 cd ..
 ```
 
+> **⚠️ Blackwell (RTX 5090 / B200): ComfyUI's `requirements.txt` installs `torch`.**
+> That is a **CUDA 12** torch, and it will **overwrite the CUDA 13 (cu130) torch** the
+> Blackwell FP4 engines need — silently breaking them. On Blackwell, do **one** of:
+> - comment out **only** `torch`, `torchvision`, `torchaudio` in ComfyUI's
+>   `requirements.txt` **before** `pip install -r requirements.txt`. **Do NOT comment
+>   out `torchsde`** — it is a pure-Python SDE-solver package (not a CUDA build), it
+>   does not pull torch, and ComfyUI's samplers fail to import without it
+>   (`ModuleNotFoundError: No module named 'torchsde'`). **Or:**
+> - install ComfyUI's requirements with a constraints file that freezes the cu130
+>   torch (after you've done the Blackwell install in Step 2). This keeps `torchsde`
+>   and the other deps while pinning torch/numpy:
+>   ```bash
+>   printf 'torch==2.12.0+cu130\ntorchvision==0.27.0\nnumpy==2.4.4\n' > /tmp/keep.txt
+>   pip install -r requirements.txt -c /tmp/keep.txt
+>   ```
+> The constraints approach is safer — it installs everything ComfyUI needs
+> (`torchsde`, `av`, `kornia`, `comfy-kitchen`, …) and only blocks torch/numpy from
+> moving. On H100 / Ada (CUDA 12) none of this applies — the default torch is fine.
+
 **Existing ComfyUI** — activate your venv and clone:
 ```bash
 source /path/to/ComfyUI/venv/bin/activate
@@ -431,17 +470,53 @@ This installs `qlip.core[nvidia]` from the TheStage AI package registry.
 > | File | Target | torch | CUDA | `tensorrt-cu12` | qlip extra |
 > |------|--------|-------|------|----------|-----------|
 > | [`requirements.txt`](requirements.txt) | **H100 / Hopper / Ada (CUDA 12)** | 2.9.1 | 12.x | 10.13.3.9 | `qlip.core[nvidia]` |
-> | [`requirements_new.txt`](requirements_new.txt) | **Blackwell (5090 sm_120a / B200 sm_100, CUDA 13)** | 2.12.0 (cu130) | 13.0 | 10.15.1.29 | `qlip.core[blackwell]` |
+> | [`requirements_blackwell.txt`](requirements_blackwell.txt) | **Blackwell (5090 sm_120a / B200 sm_100, CUDA 13)** | 2.12.0 (cu130) | 13.0 | 10.15.1.29 | `qlip.core[blackwell]` |
+
+#### Blackwell (RTX 5090 / B200) — exact install order
+
+The command above is the **H100 / CUDA 12** path. **Blackwell (CUDA 13) needs a
+specific 3-step order** — installing it in one shot does **not** work, because the
+released `qlip.core[blackwell]` wheel declares `numpy<2` and a cu12 torch, and would
+otherwise **downgrade torch 2.12+cu130 → 2.9.1+cu12 and break the FP4 engines**. Run
+these three commands, in this order, in your ComfyUI venv:
+
+```bash
+# 1. PyTorch cu130 FIRST, from PyTorch's index.
+#    (torchaudio 2.12.0 is NOT on the cu130 index — omit it; ComfyUI runs without it.)
+pip install --pre torch==2.12.0 torchvision==0.27.0 \
+    --index-url https://download.pytorch.org/whl/cu130
+
+# 2. The Blackwell requirements (tensorrt-cu12 10.15, onnx, diffusers, …).
+#    This file intentionally does NOT install qlip — see step 3.
+pip install -r custom_nodes/ComfyUI-Qlip/requirements_blackwell.txt
+
+# 3. qlip LAST, with --no-deps so it can't pull in a cu12 torch or numpy<2.
+#    The wheel's numpy<2 metadata is over-strict — it runs fine on the numpy 2.x
+#    from step 2. --no-deps is what keeps your torch 2.12+cu130 intact.
+pip install "qlip.core[blackwell]" --no-deps \
+    --extra-index-url https://thestage.jfrog.io/artifactory/api/pypi/pypi-thestage-ai-production/simple
+```
+
+Verify the stack survived (all three must print the expected versions):
+
+```bash
+python -c "import torch, tensorrt, qlip; \
+  print('torch', torch.__version__); print('trt', tensorrt.__version__); print('qlip OK')"
+# expect: torch 2.12.0+cu130 · trt 10.15.1.29 · qlip OK
+```
+
+> **Why `--no-deps`?** Without it, `pip install qlip.core[blackwell]` re-resolves the
+> whole environment and drags torch back to a cu12 build — which cannot run the
+> sm_120a / sm_100 FP4 engines. `--no-deps` installs only qlip's code and leaves the
+> cu130 stack from steps 1–2 in place. This is required, not optional, on Blackwell.
 >
-> Blackwell needs CUDA 13, the `tensorrt-cu12` ≥ 10.13 wheel (FP4 support), and the
-> `blackwell` qlip extra. Install PyTorch from the cu130 index **first**, then the
-> requirements file (see the header note inside `requirements_new.txt`).
->
-> Key Blackwell pins (full list in `requirements_new.txt`): torch 2.12.0+cu130 /
+> Key Blackwell pins (full list in `requirements_blackwell.txt`): torch 2.12.0+cu130 /
 > torchvision 0.27.0 (from the cu130 index), `tensorrt-cu12` 10.15.1.29, onnx 1.20.1
 > / onnxscript 0.7.0, diffusers 0.38.0, transformers 5.10.2. The hard requirements
-> for NVFP4 are **CUDA 13 + `tensorrt-cu12` ≥ 10.15 + an FP4-capable qlip** (one that
-> exposes `NVIDIA_NVFP4_W4A4`).
+> for running NVFP4 engines are **CUDA 13 + `tensorrt-cu12` ≥ 10.15 + `qlip.core[blackwell]`**.
+> (Building new NVFP4 engines — not just running them — additionally needs an
+> FP4-capable qlip that exposes `NVIDIA_NVFP4_W4A4`; the released wheel is enough to
+> **run** the precompiled engines below.)
 
 ### Step 3: Setup TheStage API token
 
@@ -451,6 +526,14 @@ Get your token at [app.thestage.ai](https://app.thestage.ai). Required for Qlip 
 pip install thestage
 thestage config set --access-token <YOUR_API_TOKEN>
 ```
+
+> **⚠️ Misleading error — `Nvidia support is not available. Please install with
+> `pip install qlip.core[nvidia]``.** This message appears **even when qlip is
+> correctly installed** if your TheStage token is missing or invalid — qlip can't
+> activate its GPU backend without a valid token, and the error wrongly points at
+> the install. If you hit it while running an engine, **the fix is almost always the
+> token**, not reinstalling qlip: set a valid one with
+> `thestage config set --access-token <YOUR_API_TOKEN>` and retry.
 
 ### (Optional) Download models
 
@@ -469,7 +552,7 @@ bash custom_nodes/ComfyUI-Qlip/scripts/download_ltx_2_3_models.sh
 bash custom_nodes/ComfyUI-Qlip/scripts/download_qwen_image_edit_models.sh
 ```
 
-FLUX.2 Klein is a gated model — requires `huggingface-cli login` and license acceptance. Override the HuggingFace cache location with `HF_HUB_CACHE` if needed. Scripts skip already-downloaded files.
+FLUX.2 Klein is a gated model — requires a Hugging Face login (`hf auth login`, or set `HF_TOKEN`; the old `huggingface-cli login` is deprecated) and license acceptance. Override the HuggingFace cache location with `HF_HUB_CACHE` if needed. Scripts skip already-downloaded files.
 
 ### Step 4: Launch ComfyUI
 
@@ -581,17 +664,37 @@ The format is `org/repo:path/to/engines`. Engines are downloaded once and cached
 > engine is faster (see the [Wan 2.2 RTX 5090 benchmark](#-wan-22-i2v-14b--rtx-5090))
 > but **won't load until the `fp4attn` plugin ships in a public qlip update**. Use
 > workflow [`workflows/video_wan2_2_14b_i2v_5090-qlip.json`](workflows/video_wan2_2_14b_i2v_5090-qlip.json).
+>
+> **Download the low→high LoRA** into ComfyUI's `models/loras/` (the workflow's
+> `QlipLoraStack` expects it there). The Python API needs no CLI and works
+> everywhere:
+> ```bash
+> python -c "
+> from huggingface_hub import hf_hub_download; import shutil
+> p = hf_hub_download('TheStageAI/Elastic-Wan2.2-I2V',
+>       'models/GeForce-RTX-5090/wan2.2-i2v-low-to-high-lora.safetensors')
+> shutil.copy(p, '/path/to/ComfyUI/models/loras/wan2.2-i2v-low-to-high-lora.safetensors')
+> print('LoRA installed')"
+> ```
+> The engine itself is fetched automatically by `QlipEnginesLoader` when you set
+> its `hf_repo` to the path above (`…/wan-i2v-low-noise-nvfp4_lora`).
 
-Alternatively, download manually with `huggingface-cli`:
+Alternatively, download manually with the `hf` CLI (the old `huggingface-cli` is
+deprecated in `huggingface_hub` ≥ 1.x — use `hf`):
 
 ```bash
+# The hf CLI needs `click`, which isn't always pulled in — install it if you see
+# "ModuleNotFoundError: No module named 'click'":
+pip install click
+
 # Example: FLUX.2 Klein 9B FP8 + LoRA
-huggingface-cli download TheStageAI/Elastic-FLUX-2-Klein \
+hf download TheStageAI/Elastic-FLUX-2-Klein \
     --local-dir ./engines/flux-klein \
     --include "models/H100/klein-9b-fp8_lora/*"
 ```
 
-Then point `engines_path` to the downloaded directory.
+Then point `engines_path` to the downloaded directory. (No CLI at all: use the
+`hf_hub_download(...)` Python snippet shown above for the Wan LoRA.)
 
 ## Nodes
 
