@@ -1,11 +1,5 @@
 --extra-index-url https://thestage.jfrog.io/artifactory/api/pypi/pypi-thestage-ai-production/simple
 
-# ---------------------------------------------------------------------------
-# Blackwell (RTX 5090 sm_120a / B200 sm_100), CUDA 13, Python 3.12.
-# Pins below mirror the VERIFIED working build env on the 5090 pod
-# (/workspace/flux_klein/venv_cu13, captured 2026-06-16). See README.md
-# "Which requirements.txt?" for the env-diff table.
-# ---------------------------------------------------------------------------
 
 # Qlip core — installed SEPARATELY, NOT from this file. The released
 # qlip.core[blackwell] wheel declares numpy<2 and pins torch to a cu12 build,
