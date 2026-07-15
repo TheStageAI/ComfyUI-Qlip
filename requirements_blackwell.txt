@@ -21,8 +21,10 @@
 # torch==2.12.0+cu130
 # torchvision==0.27.0
 
-# TensorRT 10.15 (Blackwell FP4 fusion needs >= 10.13). Note: the cu12 wheels
-# are what the pod actually has and they work on CUDA 13.
+# TensorRT 10.15 (Blackwell FP4 fusion needs >= 10.13). The cu12 wheels are
+# verified to work on the CUDA 13 stack (the driver is backwards-compatible);
+# the equivalent tensorrt-cu13 wheels of the same version also work — engines
+# are tied to the TRT version (10.15.1.29), not the cu12/cu13 wheel variant.
 tensorrt-cu12==10.15.1.29
 tensorrt-cu12-bindings==10.15.1.29
 tensorrt-cu12-libs==10.15.1.29
@@ -35,6 +37,9 @@ onnx-ir==0.2.1
 # Runtime helpers
 cupy-cuda12x==14.1.1
 polygraphy==0.50.3
+# TheStage CLI — needed once to set the access token (Step 3 of the README):
+#   thestage config set --access-token <YOUR_API_TOKEN>
+thestage
 
 # diffusers / transformers (loader paths)
 diffusers==0.38.0
@@ -44,5 +49,7 @@ huggingface_hub==1.13.0
 sentencepiece==0.2.1
 numpy==2.4.6
 
-# fp4attn TRT plugin build needs the CUTLASS source tree (sm_120a only):
-#   git clone --branch v3.5.1 https://github.com/NVIDIA/cutlass.git /workspace/cutlass
+# fp4attn TRT plugin build (sm_120a only): do NOT clone CUTLASS by hand — run
+#   qlip-setup-plugins
+# It fetches the TRT C++ headers and the correct CUTLASS version (>= 4.1.0;
+# older tags like v3.5.1 FAIL to build fp4attn) and persists the env vars.

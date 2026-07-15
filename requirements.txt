@@ -10,3 +10,6 @@ tensorrt-cu12-libs==10.13.3.9
 torch==2.9.1
 torchvision==0.24.1
 torchaudio==2.9.1
+# TheStage CLI — needed once to set the access token (Step 3 of the README):
+#   thestage config set --access-token <YOUR_API_TOKEN>
+thestage
