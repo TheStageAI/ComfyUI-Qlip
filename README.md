@@ -72,6 +72,7 @@ on RTX 5090). More side-by-side comparisons and metrics in the
 - [Benchmarks](#benchmarks)
 - [Installation](#installation)
 - [Precompiled Engines](#precompiled-engines)
+- [Pricing](#pricing)
 - [Nodes](#nodes)
 - [Workflows](#workflows)
 - [LoRA Details](#lora-details)
@@ -707,6 +708,48 @@ hf download TheStageAI/Elastic-FLUX-2-Klein \
 
 Then point `engines_path` to the downloaded directory. (No CLI at all: use the
 `hf_hub_download(...)` Python snippet shown above for the Wan LoRA.)
+
+## Pricing
+
+**Pay only for the inference engine, and only for what you use.** Rates below cover
+the **TheStage AI inference software only** — the Qlip Compile engines. In the cloud,
+GPU compute is billed by your provider; on your own hardware, you cover the
+infrastructure.
+
+| GPU | Rate (per hour) |
+|-----|-----------------|
+| B200, RTX 6000 | **$1.00 / hr** |
+| A100, H100, H200 | **$0.50 / hr** |
+| L40s, RTX 4090, RTX 5090 | **$0.20 / hr** |
+
+- **Full access** — the Qlip Compression Stack and ANNA are included in all plans.
+- **Pay per deployment** — you pay only for deployed models (Qlip Compile engines,
+  Elastic Models).
+- **GPU savings** — a fraction of the savings for server GPUs, billed per hour.
+- **Subscriptions** — higher-tier plans include discounted inference rates; Enterprise
+  uses flat fees.
+
+### Plans
+
+Pricing matches how you deploy — plans include GPU hours, inference runtime usage,
+plus ANNA and the optimization toolkit. Need more? Top up credits and keep running
+inference.
+
+| | **Researcher** | **Individual** | **Team** | **Enterprise** |
+|---|---|---|---|---|
+| Price | **$0 / mo** | **$20 / mo** | **$150 / mo** | **Custom** |
+| Best for | research, benchmarks, prototypes | solo builders | teams shipping to production | scale, security & private deployments |
+| GPU quota | 1 | 2 | 8 | Custom |
+| Task runs / day | up to 50 | up to 400 | up to 4,000 | Unlimited |
+| Seats | 1 | 1 | 8 | Unlimited |
+| Credits | $1 starter | $2 / mo | $10 / mo | — |
+| Inference engine + SDK | ✓ | ✓ (15% off*) | ✓ (20% off*) | flat fees* |
+| Extras | — | — | — | custom integrations, SLAs |
+| SOC 2 | ✓ | ✓ | ✓ | ✓ |
+
+<sub>* discounts / flat fees apply to inference engine + SDK usage.</sub>
+
+For on-device pricing and full plan details, see [thestage.ai](https://thestage.ai).
 
 ## Nodes
 
