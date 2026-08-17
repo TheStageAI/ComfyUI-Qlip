@@ -1,4 +1,5 @@
 import logging
+import os
 from pathlib import Path
 
 import torch
@@ -145,6 +146,23 @@ class QlipLoraStack:
     FUNCTION = "stack_lora"
     CATEGORY = "qlip"
 
+    @classmethod
+    def IS_CHANGED(cls, lora_path="", strength=1.0, prev_stack=None):
+        # The stack output is a plain list whose identity ComfyUI hashes for
+        # caching. When lora_path is fed from an upstream widget/primitive
+        # rather than typed into this node, that hash can stay stable across a
+        # path change, so the downstream QlipEnginesLoader is served from cache
+        # and the LoRA never swaps ("changing the path does nothing"). Key the
+        # change on the actual (path, strength) so a new path always
+        # invalidates. mtime is folded in so an in-place file overwrite also
+        # re-triggers.
+        try:
+            mt = os.path.getmtime(lora_path) if lora_path and \
+                os.path.exists(lora_path) else 0.0
+        except OSError:
+            mt = 0.0
+        return (str(lora_path), float(strength), mt)
+
     def stack_lora(self, lora_path, strength=1.0, prev_stack=None):
         stack = list(prev_stack) if prev_stack else []
 
@@ -225,6 +243,29 @@ class QlipEnginesLoader:
     @classmethod
     def VALIDATE_INPUTS(cls, **kwargs):
         return True
+
+    @classmethod
+    def IS_CHANGED(cls, model=None, engines_path="", hf_repo="",
+                   lora_stack=None, cuda_graph=False, shared_memory="",
+                   **kwargs):
+        # LoRA swaps happen INSIDE load_engines as an in-place mutation of the
+        # cached engines' packed tensors — not reflected in the output model's
+        # identity. With unchanged declared inputs ComfyUI caches the whole
+        # downstream and never re-runs load_engines, so a new LoRA path picked
+        # upstream never reaches the swap ("changing the lora path does
+        # nothing"). Key IS_CHANGED on the lora_stack (path+strength+mtime) so
+        # a LoRA change forces re-execution — which then hits the cheap swap
+        # fast-path, keeping the engine cache intact.
+        parts = []
+        for e in (lora_stack or []):
+            p = e.get("path", "")
+            try:
+                mt = os.path.getmtime(p) if p and os.path.exists(p) else 0.0
+            except OSError:
+                mt = 0.0
+            parts.append((str(p), float(e.get("strength", 1.0)), mt))
+        return (str(engines_path), str(hf_repo), bool(cuda_graph),
+                str(shared_memory), tuple(parts))
 
     # ------------------------------------------------------------------
     # Main entry point

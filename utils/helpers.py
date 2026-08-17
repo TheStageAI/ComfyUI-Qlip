@@ -135,15 +135,75 @@ def _add_qlip_to_path():
 # LoRA format conversion (requires diffusers)
 # ---------------------------------------------------------------------------
 
+# --- Krea-2 diffusers-LoRA key remap (pure string rename, no deps) -----------
+# Krea-2 (SingleStreamDiT) LoRAs are commonly shipped in diffusers naming:
+#   transformer_blocks.N.attn.{to_q,to_k,to_v,to_out.0,to_gate}.lora_{A,B}
+#   transformer_blocks.N.ff.{gate,up,down}.lora_{A,B}
+# The compiled engines / model use the model's OWN names:
+#   (diffusion_model.)blocks.N.attn.{wq,wk,wv,wo,gate}.lora_{down,up}
+#   (diffusion_model.)blocks.N.mlp.{gate,up,down}.lora_{down,up}
+# We rewrite the keys so LoRAManager.infer_config lands directly on `blocks`.
+# txtfusion groups (layerwise_blocks / refiner_blocks) are left untouched —
+# they are eager, not part of the compiled block engines.
+_KREA2_LAYER_RENAME = {
+    "attn.to_q": "attn.wq",
+    "attn.to_k": "attn.wk",
+    "attn.to_v": "attn.wv",
+    "attn.to_out.0": "attn.wo",
+    "attn.to_out": "attn.wo",
+    "attn.to_gate": "attn.gate",
+    "ff.gate": "mlp.gate",
+    "ff.up": "mlp.up",
+    "ff.down": "mlp.down",
+}
+
+
+def _is_krea2_diffusers_lora(raw_weights):
+    """True if the LoRA carries diffusers-style Krea-2 block keys
+    (``transformer_blocks.<n>.attn.to_q``-shaped)."""
+    for k in raw_weights:
+        if k.startswith("transformer_blocks.") and (
+                ".attn.to_q." in k or ".attn.to_out.0." in k
+                or ".ff.down." in k):
+            return True
+    return False
+
+
+def _remap_krea2_lora_keys(raw_weights):
+    """Rewrite diffusers Krea-2 block keys to the model's own names. Only the
+    ``transformer_blocks`` group is remapped to ``blocks``; every other key
+    (txtfusion, alphas we can't place) is passed through unchanged."""
+    out = {}
+    for key, val in raw_weights.items():
+        if not key.startswith("transformer_blocks."):
+            out[key] = val
+            continue
+        nk = "blocks." + key[len("transformer_blocks."):]
+        for src, dst in _KREA2_LAYER_RENAME.items():
+            if "." + src + "." in "." + nk:
+                nk = nk.replace(src + ".", dst + ".", 1)
+                break
+        nk = nk.replace(".lora_A.", ".lora_down.").replace(
+            ".lora_B.", ".lora_up.")
+        out[nk] = val
+    logger.info("Detected Krea-2 diffusers LoRA — remapped %d block keys to "
+                "model naming (blocks/attn.wq/lora_down)", len(raw_weights))
+    return out
+
+
 def convert_lora_format(raw_weights):
     """Detect and convert LoRA format to diffusers format.
 
-    Supports Kohya, XLabs, BFL Control formats.
-    Requires `diffusers` package (listed in ComfyUI-Qlip requirements.txt).
+    Supports Kohya, XLabs, BFL Control, and Krea-2 (SingleStreamDiT) formats.
+    Requires `diffusers` package for the flux converters (Krea-2 needs none).
 
     Pass this function as ``lora_format_converter`` to ``LoRAManager()``
     and ``LoRAManager.infer_config()``.
     """
+    # Krea-2 diffusers LoRA — pure key rename, no diffusers dependency
+    if _is_krea2_diffusers_lora(raw_weights):
+        return _remap_krea2_lora_keys(raw_weights)
+
     # Kohya detection: prefix before .lora_down has no dots with digit segments
     lora_down_keys = [k for k in raw_weights if ".lora_down.weight" in k]
     is_kohya = False
