@@ -106,6 +106,45 @@ on RTX 5090). More side-by-side comparisons and metrics in the
 - **Weight Streaming**: Large models stream weights from CPU/disk, reducing GPU memory requirements
 - **Dynamic Shapes**: Single compiled engine supports a range of input resolutions
 
+## QLIP Agent — auto-tune your model to the best speed/quality config
+
+**Stop guessing which knobs to turn.** ComfyUI-Qlip ships a lot of acceleration levers —
+progressive resolution, step caching, sparse attention, drafting, token pruning,
+compilation. Finding the combination that makes *your* model fast without visibly hurting
+quality is a tedious sweep. The **QLIP Agent** does that sweep for you.
+
+Point a coding agent (Claude Code / Codex / Cursor) at **[`AGENTS.md`](AGENTS.md)** and it:
+
+- **reads your ComfyUI nodes live** (every Qlip node + its parameters), so it always
+  knows the current knobs — new nodes are picked up automatically;
+- **searches to frontier saturation** — not a fixed list: it covers every lever's axes,
+  combines them, and keeps refining until the speed×quality frontier stops improving;
+- **judges every candidate with qlip-arena** on a fixed prompt suite — LPIPS fidelity
+  vs your eager baseline **and** a human-preference Elo, so a config is only accepted if
+  it's genuinely as good;
+- **hands you ready-to-run workflows** — `best_workflow.json` plus one for *every* point
+  on the frontier (max-speed, max-quality, balanced — you pick), a speed×quality chart
+  coloured by the judge's verdict (win/tie/lose vs eager), and a side-by-side collage so
+  you can *see* the quality, not just trust a number.
+
+It runs against a **local or remote** ComfyUI, and treats the qlip runtime as a black box
+— it only ever uses the exposed node parameters, so nothing about your licensed install
+leaks. One command in; a benchmarked, deployable workflow out.
+
+**Try it — hand your agent a goal like this:**
+
+> Read `custom_nodes/ComfyUI-Qlip/AGENTS.md` and follow it to find the best QLIP
+> acceleration config for my model. My ComfyUI is at `http://127.0.0.1:8188`, the
+> workflow is `my_workflow.json`, and I want max speedup while keeping quality within
+> LPIPS 0.3 of the original. Give me the recommended workflow, the full Pareto frontier
+> with the arena win/tie/lose verdicts, and a visual collage.
+
+The agent creates the baseline, runs the search, and returns a `report/` with the
+recommended `best_workflow.json`, per-point workflows, the frontier chart, the
+win/tie/lose verdict chart, and `collage.html`. See **[`AGENTS.md`](AGENTS.md)** for the
+full contract and **[`tools/`](tools/)** for the scripts it drives (`fit_spectrum.py`,
+`qlip_report.py`).
+
 ## Supported Models
 
 | Model | Architecture | Parameters | Type | Precompiled Engines |

@@ -815,19 +815,40 @@ def patch_zimage_fixed_cap_len(transformer, fixed_cap_len: int = 64):
           f"{fixed_cap_len} tokens")
 
 
-def _rebind_optimized_attention(orig_fn, new_fn):
+def _rebind_optimized_attention(orig_fn, new_fn, extra_symbols=None):
     """Set `optimized_attention = new_fn` in the source module and in every
-    loaded module that imported the original by value. Returns the list of
-    modules patched so the caller's uninstall can restore them."""
+    loaded module that imported the original by value. Returns a list of
+    (module, symbol, old_fn) tuples so the caller's uninstall can restore them.
+
+    Some model families (e.g. Krea-2 in comfy.ldm.krea2.model) do NOT use the
+    plain ``optimized_attention`` — they import ``optimized_attention_masked``
+    by name. Pass those names in ``extra_symbols`` so the sparse router also
+    intercepts them; without this the sparse kernel never engages on such
+    models (all-dense). ``extra_symbols`` entries are matched by NAME regardless
+    of the current bound value, since the masked variant is a different object
+    than ``orig_fn``.
+    """
     import sys
     patched = []
+    extra = set(extra_symbols or [])
     for name, mod in list(sys.modules.items()):
         if mod is None:
             continue
+        # the plain symbol: match by identity against orig_fn
         if getattr(mod, "optimized_attention", None) is orig_fn:
             try:
+                old = mod.optimized_attention
                 mod.optimized_attention = new_fn
-                patched.append(mod)
+                patched.append((mod, "optimized_attention", old))
             except Exception:
                 pass
+        # extra symbols (e.g. optimized_attention_masked): match by name
+        for sym in extra:
+            cur = getattr(mod, sym, None)
+            if callable(cur) and cur is not new_fn:
+                try:
+                    mod.__dict__[sym] = new_fn
+                    patched.append((mod, sym, cur))
+                except Exception:
+                    pass
     return patched

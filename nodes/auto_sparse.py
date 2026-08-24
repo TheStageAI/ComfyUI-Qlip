@@ -63,7 +63,11 @@ def _install(mod, orig_fn):
                            attn_precision=attn_precision,
                            skip_reshape=skip_reshape, **kw)
 
-    _PATCHED = _rebind_optimized_attention(orig_fn, routed)
+    # also intercept optimized_attention_masked — Krea-2 (comfy.ldm.krea2.model)
+    # imports it by name and never touches the plain optimized_attention, so
+    # without this the sparse kernel stays all-dense on Krea-2.
+    _PATCHED = _rebind_optimized_attention(
+        orig_fn, routed, extra_symbols=["optimized_attention_masked"])
     import comfy.ldm.modules.attention as A
     A.optimized_attention = routed
 
@@ -74,9 +78,10 @@ def _uninstall():
     if _ORIG is not None:
         import comfy.ldm.modules.attention as A
         A.optimized_attention = _ORIG
-        for mod in _PATCHED:
+        # _PATCHED is now a list of (module, symbol, old_fn) tuples
+        for mod, sym, old in _PATCHED:
             try:
-                mod.optimized_attention = _ORIG
+                mod.__dict__[sym] = old
             except Exception:
                 pass
     _PATCHED = []
@@ -99,14 +104,41 @@ class QlipAutoSparse:
                              "are picked dynamically per step."}),
             },
             "optional": {
-                "selector": (["diversity", "topk", "meansim"],
+                "selector": (["diversity", "topk", "meansim", "tau"],
                              {"default": "diversity",
                              "tooltip": "How blocks are picked. diversity "
                              "(DEFAULT, recommended) = similarity minus "
                              "redundancy, keeps distinct blocks; best DOVER "
                              "quality, beats top-k and even dense at the same "
                              "speed. topk = flat top-k by similarity. meansim "
-                             "= cdf mass + self-similarity."}),
+                             "= cdf mass + self-similarity. tau = Sol-Attn "
+                             "DYNAMIC budget: keep blocks above mean+tau*std of "
+                             "each query block's scores (ignores `sparsity`; use "
+                             "the `tau` knob) — budget adapts per query block."}),
+                "tau": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 4.0,
+                        "step": 0.1, "tooltip": "selector=tau only: threshold in "
+                        "#-of-sigmas above each query block's mean score. Larger "
+                        "= fewer blocks kept = faster/lower quality. 1.0 default "
+                        "(Sol-Attn)."}),
+                "correction": (["none", "sla", "vspace_block", "vspace_topk"],
+                               {"default": "none",
+                               "tooltip": "Attention mode. none = block-sparse "
+                               "(fast, skips blocks). sla = ORIGINAL SLA: fast "
+                               "LUT block-sparse kernel + linear-attention "
+                               "compensator (the real fast+quality path — "
+                               "recommended to test). vspace_block = block "
+                               "kernel + V-space rank-d correction (moderate "
+                               "sparsity). vspace_topk = per-token top-k + "
+                               "V-space — best QUALITY but PURE PYTORCH (slow, "
+                               "quality-probe only)."}),
+                "d_rank": ("INT", {"default": 24, "min": 4, "max": 128,
+                           "step": 4, "tooltip": "Rank of the V-space "
+                           "correction subspace (both vspace_* modes). 24 "
+                           "captured ~98% of the residual on Krea-2."}),
+                "score_rank": ("INT", {"default": 32, "min": 8, "max": 128,
+                              "step": 8, "tooltip": "vspace_topk only: rank of "
+                              "the cheap SVD key-scorer. 32 ≈ exact top-k on "
+                              "Krea-2; 16 drifts."}),
                 "simthreshd1": ("FLOAT", {"default": 0.1, "min": -0.5, "max": 1.0,
                                 "step": 0.05, "tooltip": "meansim only: "
                                 "self-similarity threshold. Higher = fewer "
@@ -127,7 +159,8 @@ class QlipAutoSparse:
         return float("nan")
 
     def apply(self, model, enable=True, sparsity=0.5, selector='diversity',
-              simthreshd1=0.1, smooth_k=True):
+              correction='none', d_rank=24, score_rank=32,
+              simthreshd1=0.1, smooth_k=True, tau=1.0):
         _validate_diffusion_model_input(model, "QlipAutoSparse")
         global _ORIG
 
@@ -151,12 +184,21 @@ class QlipAutoSparse:
 
         mod = QlipAutoSparseAttention(SparseAttentionConfig(
             sparsity=float(sparsity), selector=selector,
+            correction=correction, d_rank=int(d_rank),
+            score_rank=int(score_rank), tau=float(tau),
             simthreshd1=float(simthreshd1), smooth_k=smooth_k))
 
         patched.model._qlip_auto_sparse = mod
         _install(mod, _ORIG)
+        corr = ("" if correction == "none"
+                else f", correction={correction} (d_rank={d_rank}"
+                     + (f", score_rank={score_rank}" if correction ==
+                        "vspace_topk" else "") + ")")
+        warn = ("  [vspace_topk is PURE PYTORCH — quality probe, not a speed "
+                "win; no fused kernel yet]" if correction == "vspace_topk"
+                else "")
         print(f"[QlipAutoSparse] enabled: sparsity={sparsity} "
-              f"(keep ~{1.0-sparsity:.0%} of blocks, selector={selector}), "
-              f"licensed qlip session. Sparsifies self-attn with "
-              f"seq>={mod.cfg.min_seq}.")
+              f"(keep ~{1.0-sparsity:.0%} of blocks, selector={selector}"
+              f"{corr}), licensed qlip session. Sparsifies self-attn with "
+              f"seq>={mod.cfg.min_seq}.{warn}")
         return (patched,)
