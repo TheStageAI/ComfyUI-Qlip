@@ -31,6 +31,37 @@ def _img_path(store, config, prompt_id, seed):
     return hits[0] if hits else None
 
 
+_VIDEO_EXT = (".mp4", ".webm", ".mov", ".mkv", ".gif", ".avi")
+
+
+def _load_frame(path):
+    """Return a PIL RGB image for an image file, OR a representative frame for a
+    video file (middle frame). Video (arena stores .mp4 for video models) can't be
+    opened by PIL, so pull one frame via imageio."""
+    from PIL import Image
+    if path.lower().endswith(_VIDEO_EXT):
+        import imageio
+        reader = imageio.get_reader(path)
+        try:
+            try:
+                n = reader.get_length()
+            except Exception:
+                n = None
+            frames = []
+            it = reader.iter_data()
+            # grab up to the middle frame (cheap; avoids reading the whole clip)
+            target = (n // 2) if isinstance(n, int) and n > 0 and n < 1e6 else 8
+            for i, fr in enumerate(it):
+                frames.append(fr)
+                if i >= target:
+                    break
+            arr = frames[len(frames) // 2] if frames else None
+            return Image.fromarray(arr).convert("RGB") if arr is not None else None
+        finally:
+            reader.close()
+    return Image.open(path).convert("RGB")
+
+
 def _prompt_ids(store, config, seed, limit):
     base = os.path.join(store, "runs", config, "images")
     ids = []
@@ -140,7 +171,9 @@ def build(store, report, out_path, rows, seed, thumb, explicit_cols):
             p = _img_path(store, cfg, pid, seed)
             if p:
                 try:
-                    im = Image.open(p).convert("RGB")
+                    im = _load_frame(p)
+                    if im is None:
+                        raise ValueError("no frame")
                     im.thumbnail((thumb, thumb))
                     canvas.paste(im, (x, y))
                 except Exception:
