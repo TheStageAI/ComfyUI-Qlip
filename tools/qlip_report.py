@@ -376,21 +376,119 @@ def write_workflow_for(entry, workflow_path, out_path):
     return out_path
 
 
-def write_frontier_workflows(front, best, workflow_path, out_dir):
+# ---- UI-format sibling output --------------------------------------------
+# The API graph above is what you POST to /prompt, but it does NOT open in the
+# ComfyUI canvas (the UI wants {nodes:[...], links:[...]} with widgets_values).
+# So we ALSO emit a UI-format copy per point, with the same --set baked in, so
+# the user can drag it into the UI to inspect/tweak. Mapping node.pin -> the
+# right widgets_values slot needs the node's widget order, which UI json does
+# not store by name; we take it from a live /object_info dump when available,
+# and fall back to leaving the widget untouched (never corrupt the graph).
+
+def _load_object_info(oinfo):
+    """Return the /object_info dict from a path or URL, or None."""
+    if not oinfo:
+        return None
+    try:
+        if oinfo.startswith("http"):
+            import urllib.request
+            with urllib.request.urlopen(oinfo, timeout=15) as r:
+                return json.load(r)
+        return json.load(open(oinfo))
+    except Exception:
+        return None
+
+
+def _widget_input_order(object_info, class_type):
+    """Ordered list of the WIDGET input names for a node class (the ones that
+    become widgets_values, i.e. non-link inputs), from /object_info. The UI
+    lays widgets_values in required-then-optional declaration order, skipping
+    inputs that are wired as links (model/latent/etc. — type is a known socket,
+    not a widget)."""
+    spec = (object_info or {}).get(class_type, {})
+    inp = spec.get("input", {})
+    order = []
+    LINKY = {"MODEL", "LATENT", "CONDITIONING", "VAE", "CLIP", "IMAGE",
+             "SAMPLER", "SIGMAS", "GUIDER", "NOISE", "AUDIO", "VIDEO"}
+    for grp in ("required", "optional"):
+        for name, spec_v in inp.get(grp, {}).items():
+            t = spec_v[0] if isinstance(spec_v, (list, tuple)) and spec_v else spec_v
+            # a link socket is a single known type string (not a list of choices,
+            # not a primitive widget type). Everything else renders as a widget.
+            if isinstance(t, str) and t in LINKY:
+                continue
+            order.append(name)
+    return order
+
+
+def _apply_overrides_ui(ui_wf, config_str, object_info):
+    """Bake a config's --set onto a UI-format graph (in place). node.pin -> the
+    widgets_values slot via /object_info widget order; skip if we can't map it
+    safely (never corrupt the graph)."""
+    overrides = parse_overrides(config_str)
+    if not overrides:
+        return ui_wf
+    by_id = {str(n.get("id")): n for n in ui_wf.get("nodes", [])}
+    for key, val in overrides.items():
+        if "." not in key:
+            continue
+        nid, pin = key.split(".", 1)
+        node = by_id.get(str(nid))
+        if not node or "widgets_values" not in node:
+            continue
+        try:
+            parsed = json.loads(val)
+        except Exception:
+            parsed = val
+        order = _widget_input_order(object_info, node.get("type"))
+        wv = node["widgets_values"]
+        if pin in order and isinstance(wv, list) and order.index(pin) < len(wv):
+            wv[order.index(pin)] = parsed          # name-mapped slot (robust)
+        # else: unknown widget order -> leave untouched rather than guess
+    return ui_wf
+
+
+def write_ui_workflow_for(entry, ui_workflow_path, object_info, out_path):
+    """Apply one config's --set onto the source UI-workflow → a canvas-openable graph."""
+    if not entry or not ui_workflow_path or not os.path.exists(ui_workflow_path):
+        return None
+    try:
+        ui = json.load(open(ui_workflow_path))
+    except Exception:
+        return None
+    if "nodes" not in ui:            # not a UI graph — skip quietly
+        return None
+    _apply_overrides_ui(ui, entry.get("config", ""), object_info)
+    json.dump(ui, open(out_path, "w"), indent=2)
+    return out_path
+
+
+def write_frontier_workflows(front, best, workflow_path, out_dir,
+                             ui_workflow_path=None, object_info=None):
     """Write best_workflow.json AND one workflow per frontier point (workflows/),
-    so the user can pick ANY operating point, not just the recommended best."""
+    so the user can pick ANY operating point, not just the recommended best.
+    When a UI-format source workflow is given, ALSO write *_ui.json siblings
+    (best_workflow_ui.json, workflows/<name>_ui.json) that open in the ComfyUI
+    canvas — same --set baked in."""
     written = {}
+
+    def _pair(entry, api_out, ui_out):
+        p = write_workflow_for(entry, workflow_path, api_out)
+        if ui_workflow_path:
+            write_ui_workflow_for(entry, ui_workflow_path, object_info, ui_out)
+        return p
+
     if best:
-        p = write_workflow_for(best, workflow_path,
-                               os.path.join(out_dir, "best_workflow.json"))
+        p = _pair(best, os.path.join(out_dir, "best_workflow.json"),
+                  os.path.join(out_dir, "best_workflow_ui.json"))
         if p:
             written["best"] = p
     wf_dir = os.path.join(out_dir, "workflows")
     os.makedirs(wf_dir, exist_ok=True)
     for e in front:
         safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in e["name"])
-        p = write_workflow_for(e, workflow_path,
-                               os.path.join(wf_dir, safe + ".json"))
+        p = _pair(e, os.path.join(wf_dir, safe + ".json"),
+                  os.path.join(wf_dir, safe + "_ui.json"))
         if p:
             written[e["name"]] = p
     return written
@@ -408,6 +506,14 @@ def main():
     ap.add_argument("--workflow", default=None,
                     help="source API-workflow; best config's --set is applied to it "
                          "and written as best_workflow.json (ready to queue)")
+    ap.add_argument("--ui-workflow", default=None,
+                    help="source UI-format workflow (the {nodes,links} graph). When "
+                         "given, ALSO writes *_ui.json siblings that open in the ComfyUI "
+                         "canvas, with the same --set baked in.")
+    ap.add_argument("--object-info", default=None,
+                    help="path to a /object_info dump OR its URL (e.g. "
+                         "http://127.0.0.1:8188/object_info). Used to map node.pin -> the "
+                         "correct widgets_values slot when writing the UI workflow.")
     ap.add_argument("--configs", default=None,
                     help="configs.jsonl written by the search runner: {name, set} per "
                          "line. Supplies the --set overrides (arena export omits them) "
@@ -432,8 +538,12 @@ def main():
     ppath = plot_params(front, args.out)
     vpath = plot_verdicts(entries, args.out)
     mpath = write_md(report, best, args.out, meta)
-    # best_workflow.json + one workflow per frontier point (workflows/)
-    wf_written = write_frontier_workflows(front, best, args.workflow, args.out)
+    # best_workflow.json + one workflow per frontier point (workflows/);
+    # + *_ui.json siblings when a UI-format source workflow is provided.
+    object_info = _load_object_info(args.object_info)
+    wf_written = write_frontier_workflows(front, best, args.workflow, args.out,
+                                          ui_workflow_path=args.ui_workflow,
+                                          object_info=object_info)
     wpath = wf_written.get("best")
     # optional: a workflow for a user-requested point (any config, not just frontier)
     ptpath = None
@@ -443,6 +553,10 @@ def main():
             ptpath = write_workflow_for(
                 pe, args.workflow,
                 os.path.join(args.out, "point_%s.json" % args.point))
+            if args.ui_workflow:
+                write_ui_workflow_for(
+                    pe, args.ui_workflow, object_info,
+                    os.path.join(args.out, "point_%s_ui.json" % args.point))
 
     print(f"configs: {len(entries)} | frontier: {len(front)}")
     if best:

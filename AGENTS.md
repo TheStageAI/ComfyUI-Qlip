@@ -326,9 +326,27 @@ $VENV <ComfyUI-Qlip>/tools/qlip_report.py \
     --tol 0.35 \
     --out <work>/report \
     --model <model> --gpu "<your GPU>" \
-    --workflow <work>/<model>_qlip_api.json \    # so best_workflow.json is emitted
+    --workflow <work>/<model>_qlip_api.json \    # API graph → best_workflow.json (queue-ready)
+    --ui-workflow <original UI-format workflow.json> \  # UI graph → *_ui.json (canvas-openable)
+    --object-info http://127.0.0.1:8188/object_info \   # maps node.pin → the right widget slot
     --configs <work>/configs.jsonl               # the --set map (arena omits overrides)
 ```
+
+**ALWAYS pass BOTH `--workflow` (API) AND `--ui-workflow` (UI) + `--object-info`.** The API
+graph is what you POST to `/prompt` but it does NOT open in the ComfyUI canvas; the UI graph
+(the original `{nodes,links}` workflow the human handed you, e.g. `h3.json`) is what a person
+drags into the editor to inspect/tweak. The tool bakes the winning `--set` into BOTH and writes
+`best_workflow.json` + `best_workflow_ui.json` (and the same pair per frontier point). Without
+`--ui-workflow` the user gets only the un-openable API json — always provide it. `--object-info`
+lets the tool place each override in the correct `widgets_values` slot by name (fetch it live
+from the running ComfyUI); without it, UI overrides that can't be mapped are left untouched
+rather than guessed.
+
+> **Note on the UI graph containing your Qlip hooks.** The `--set` targets are your inserted
+> acceleration nodes (QlipProgressive/Cache/AutoSparse/…). For the `*_ui.json` to carry those
+> overrides, the UI workflow you pass must ALSO contain those Qlip nodes (same node ids as the
+> API graph). If your UI→API step (§3) added the hooks only to the API graph, add them to a UI
+> copy too (or keep the human's UI graph with the hooks placed) so both formats stay in sync.
 It reads the exported arena JSONs and writes:
 - `report.json` — every config with (speedup, mean_lpips, Δelo), the Pareto frontier,
   and the single recommended best config for the tolerance;
@@ -338,11 +356,13 @@ It reads the exported arena JSONs and writes:
 - `verdicts.png` — per-config win/tie/lose bars from the ensemble judge vs eager;
 - `params.png` — which node parameters/combinations the frontier configs use;
 - `REPORT.md` — human summary (best config, reproduction `--set`, rejected hypotheses);
-- **`best_workflow.json`** — the winning config baked into the source workflow, a
-  ready-to-run ComfyUI API graph the user imports & queues directly;
-- **`workflows/<config>.json`** — a ready-to-run workflow for EVERY frontier point, so
-  the user can pick any operating point (max-speed, max-quality, balanced), not only the
-  recommended best. ALWAYS pass `--workflow` so these are produced.
+- **`best_workflow.json`** (API) + **`best_workflow_ui.json`** (UI/canvas) — the winning
+  config baked into the source workflow, in BOTH formats: the API graph queues directly via
+  `/prompt`, the UI graph opens in the ComfyUI editor to inspect/tweak;
+- **`workflows/<config>.json`** + **`workflows/<config>_ui.json`** — the same API+UI pair for
+  EVERY frontier point, so the user can pick any operating point (max-speed, max-quality,
+  balanced) and open it in either form. ALWAYS pass `--workflow` AND `--ui-workflow` so both
+  are produced.
 
 To hand the user the workflow for a SPECIFIC point on request (any config, not just the
 frontier), re-run with `--point <config-name>` → `report/point_<name>.json`. (You can
@@ -364,8 +384,9 @@ $VENV <ComfyUI-Qlip>/tools/qlip_collage.py \
 columns, but you can force them with `--configs "<cfg1>,<cfg2>,..."` (eager is prepended).
 This replaces the older `arena compare` HTML path — the PNG is the deliverable.
 
-Hand the user: the recommended `best_workflow.json`, the `workflows/` for other points,
-`frontier.png` + `verdicts.png`, the `collage.png`, and `report/`.
+Hand the user: the recommended `best_workflow.json` (+ `best_workflow_ui.json` to open in the
+canvas), the `workflows/` for other points (API + `_ui.json` each), `frontier.png` +
+`verdicts.png`, the `collage.png`, and `report/`.
 
 ## 7. Spectrum fit — REQUIRED before using QlipProgressive spectral backbone
 

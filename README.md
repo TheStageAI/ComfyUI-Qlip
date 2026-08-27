@@ -71,11 +71,13 @@ on RTX 5090). More side-by-side comparisons and metrics in the
   480×480 / 81 frames. Published as
   [`wan2.2-i2v-low-to-high-lora.safetensors`](https://huggingface.co/TheStageAI/Elastic-Wan2.2-I2V/tree/main/models/GeForce-RTX-5090);
   workflow `workflows/video_wan2_2_14b_i2v_5090-qlip.json`.
-- **Blackwell install docs** — exact 4-step order (torch cu130 → ComfyUI
-  `requirements.txt` under a constraints file → `requirements_blackwell.txt`
-  → `qlip.core[blackwell] --no-deps`), covering the
-  ComfyUI-`requirements.txt`-installs-cu12-torch gotcha. The **NVFP4** engines run on today's `qlip.core[blackwell]`; the
-  **FP4-attention** engines need the upcoming `fp4attn` plugin update.
+- **Blackwell install** — the cu130-torch ordering (torch cu130 → ComfyUI
+  requirements under a constraints file → device stack → `qlip.core[blackwell]
+  --no-deps`) that works around the ComfyUI-installs-cu12-torch gotcha is now
+  automated by [`install.py`](#quick-install-recommended--one-command-device-aware)
+  (device stacks live in `pyproject.toml` extras). The **NVFP4** engines run on
+  today's `qlip.core[blackwell]`; the **FP4-attention** engines need the upcoming
+  `fp4attn` plugin update.
 
 **2026-04-15** — Wan 2.2 I2V + shared memory + runtime patches + API client
 - **Wan 2.2 I2V (14B)** — image-to-video, FP8 + LoRA, two-stage pipeline (high-noise + low-noise), dynamic shapes up to 640x640
@@ -87,6 +89,7 @@ on RTX 5090). More side-by-side comparisons and metrics in the
 ## Table of Contents
 
 - [How It Works](#how-it-works)
+- [Nodes at a Glance](#nodes-at-a-glance)
 - [Supported Models](#supported-models)
 - [Benchmarks](#benchmarks)
 - [Installation](#installation)
@@ -105,6 +108,24 @@ on RTX 5090). More side-by-side comparisons and metrics in the
 - **Dynamic LoRA as Input Tensors**: LoRA weights are runtime inputs — hot-swap without recompilation
 - **Weight Streaming**: Large models stream weights from CPU/disk, reducing GPU memory requirements
 - **Dynamic Shapes**: Single compiled engine supports a range of input resolutions
+
+## Nodes at a Glance
+
+The nodes fall into three roles. **Model-definition** nodes set up your fast baseline (leave them in place); **acceleration** nodes are the per-config levers you sweep (each has an `enable` toggle, so one workflow serves both baseline and every candidate); **measurement** nodes only report. Splice the acceleration hooks into the `MODEL` line between the loader and the sampler, in the order `QlipAutoSparse → QlipCompile → QlipCache → QlipProgressive`. Full parameter tables are in [Nodes](#nodes).
+
+| Node | Role | What it does | Main knob |
+|------|------|--------------|-----------|
+| **QlipEnginesLoader** | baseline | Loads a pre-compiled `.qlip`/`.engine` and swaps in the blocks at runtime | `engines_path` / `hf_repo` |
+| **QlipCompile** (+ **QlipQuantConfig**) | baseline | Compiles the model on the fly (no ONNX/engine build), optional FP8/NVFP4 | `quantize` |
+| **QlipLoraStack** / **QlipLoraSwitch** | baseline | Chain LoRA files; enable/disable at runtime without reloading | `lora_path` / `enable` |
+| **QlipCache** | acceleration | Skips whole denoising steps (or middle blocks) by predicting slow-moving output — best on many-step models | `threshold` (higher = faster) |
+| **QlipAutoSparse** | acceleration | Int8 dynamic block-sparse attention on any DiT — best where attention dominates (hi-res video, long+audio) | `sparsity` (0.5/0.7/0.9) |
+| **QlipProgressive** | acceleration | Runs early steps on a downscaled latent — best on high-res image | `low_scale` / `switch_mode` |
+| **QlipTokenPrune** | acceleration | Drops the least-important tokens (video); orthogonal to sparse, they stack | `keep_ratio` |
+| **QlipDrafter** | acceleration | Self-speculative sparse draft of the step (video) | `split_step` / `sparsity` |
+| **QlipTimer Start/Stop/Report**, **QlipCacheReport** | measurement | Time a node span; report cache real-vs-skipped steps | — |
+
+Amdahl guide: image → resolution dominates (`QlipProgressive` leads, attention levers capped); video → attention dominates (`QlipAutoSparse`/`QlipTokenPrune`/`QlipDrafter` lead). `QlipCache` is orthogonal and scales with step count, not resolution — strongest on 20–50-step base models, weak on 4–8-step distilled ones. The best result is usually a **combination** of two orthogonal levers (e.g. cache + progressive on image, sparse + cache on video). Don't want to tune by hand? The [QLIP Agent](#qlip-agent--auto-tune-your-model-to-the-best-speedquality-config) sweeps it all for you.
 
 ## QLIP Agent — auto-tune your model to the best speed/quality config
 
@@ -464,8 +485,43 @@ via the `QlipLoraStack`.
 ### Prerequisites
 
 - Python 3.10+
-- NVIDIA GPU with CUDA 12.x (Hopper, Blackwell, Ada Lovelace)
+- NVIDIA GPU — Hopper / Ada (CUDA 12) or Blackwell RTX 5090 / B200 (CUDA 13)
 - ComfyUI installed and working (see below if starting from scratch)
+
+### Quick install (recommended) — one command, device-aware
+
+The tricky part of installing Qlip alongside ComfyUI is the **torch build**:
+ComfyUI, your GPU, and qlip can each want a different one in the same venv, and a
+stray `pip install` silently swaps it and breaks the CUDA engines. The installer
+handles all of it — it **detects your device**, installs the right torch first,
+then ComfyUI's requirements under a constraints file (so torch stays put), then the
+matching `qlip.core` extra.
+
+```bash
+# 1. clone the node into ComfyUI (from your ComfyUI root, venv active):
+git clone https://github.com/TheStageAI/ComfyUI-Qlip custom_nodes/ComfyUI-Qlip
+
+# 2. one command — auto-detects nvidia / blackwell:
+python custom_nodes/ComfyUI-Qlip/install.py
+
+# 3. set your TheStage token (needed for engine access):
+thestage config set --access-token <YOUR_API_TOKEN>
+```
+
+Force a profile or preview the plan:
+
+```bash
+python custom_nodes/ComfyUI-Qlip/install.py --device blackwell   # skip detection
+python custom_nodes/ComfyUI-Qlip/install.py --dry-run            # print, install nothing
+```
+
+Verify:
+
+```bash
+python -c "import torch, qlip; print('torch', torch.__version__); print('qlip OK')"
+```
+
+Prefer to do it by hand (or debugging a step)? The full manual sequence is below.
 
 ### Step 1: Install ComfyUI-Qlip nodes
 
@@ -475,16 +531,20 @@ via the `QlipLoraStack`.
 >
 > Check the model's HuggingFace repo for the exact commit. If you need multiple models from different commits, use the **newer** commit (`b615af1c`) — it is backwards-compatible with older models.
 
-> **⚠️ Blackwell (RTX 5090 / B200): read this BEFORE running the block below.**
-> ComfyUI's `requirements.txt` installs `torch` — a **CUDA 12** build that would
-> **overwrite the CUDA 13 (cu130) torch** the Blackwell FP4 engines need, silently
-> breaking them. On Blackwell, **skip the `pip install -r requirements.txt` line
-> below** and instead follow the [Blackwell exact install order](#blackwell-rtx-5090--b200--exact-install-order)
-> in Step 2 — it installs the cu130 torch first and then ComfyUI's requirements
-> under a constraints file that keeps torch pinned. On H100 / Ada (CUDA 12) none
-> of this applies — run the block as-is.
+> **⚠️ Blackwell (RTX 5090 / B200):** ComfyUI's own `requirements.txt` installs a
+> **CUDA-12** torch that would overwrite the **cu130** torch the FP4 engines need.
+> **Don't run ComfyUI's `requirements.txt` by hand on Blackwell** — let
+> [`install.py`](#quick-install-recommended--one-command-device-aware) do it: it
+> installs cu130 torch first, then ComfyUI's requirements under a constraints file
+> that keeps torch pinned. On H100 / Ada (CUDA 12) it doesn't matter either way.
 
 **From scratch** (no ComfyUI yet):
+
+> **Do NOT run `pip install -r requirements.txt` for ComfyUI yourself.** The
+> installer in the last step does it for you — with torch pinned so ComfyUI's
+> unpinned `torch` line can't overwrite your device build. Running it by hand
+> (especially on Blackwell) is exactly what breaks the engines.
+
 ```bash
 git clone https://github.com/comfyanonymous/ComfyUI.git
 cd ComfyUI
@@ -492,10 +552,13 @@ git checkout 048dd2f3  # or b615af1c for LTX-2.3 / Qwen Image Edit / Wan 2.2
 python3 -m venv venv
 source venv/bin/activate
 pip install --upgrade pip
-pip install -r requirements.txt   # H100 / Ada only — on Blackwell SKIP this line (see Step 2)
-cd custom_nodes
-git clone https://github.com/TheStageAI/ComfyUI-Qlip
-cd ..
+
+# clone the node:
+git clone https://github.com/TheStageAI/ComfyUI-Qlip custom_nodes/ComfyUI-Qlip
+
+# this ONE command installs everything: device torch, ComfyUI's own
+# requirements (torch-pinned via a constraints file), the CUDA stack, and qlip.
+python custom_nodes/ComfyUI-Qlip/install.py
 ```
 
 **Existing ComfyUI** — activate your venv and clone:
@@ -509,104 +572,87 @@ git clone https://github.com/TheStageAI/ComfyUI-Qlip
 
 ### Step 2: Install Qlip dependencies
 
-From the **ComfyUI root** directory (with the same venv activated):
+**Use the installer** (recommended — see [Quick install](#quick-install-recommended--one-command-device-aware) above):
 
 ```bash
-pip install -r custom_nodes/ComfyUI-Qlip/requirements.txt
+python custom_nodes/ComfyUI-Qlip/install.py    # auto-detects your device
 ```
 
-This installs `qlip.core[nvidia]` from the TheStage AI package registry.
+It installs the right torch first, ComfyUI's requirements under a constraints
+file (so torch can't be moved), then the matching device requirements file
+(`requirements_nvidia.txt` / `requirements_blackwell.txt`) + `qlip.core`.
 
-> **Which `requirements.txt`?** Two are shipped, for two different GPU generations:
->
-> | File | Target | torch | CUDA | `tensorrt-cu12` | qlip extra |
-> |------|--------|-------|------|----------|-----------|
-> | [`requirements.txt`](requirements.txt) | **H100 / Hopper / Ada (CUDA 12)** | 2.9.1 | 12.x | 10.13.3.9 | `qlip.core[nvidia]` |
-> | [`requirements_blackwell.txt`](requirements_blackwell.txt) | **Blackwell (5090 sm_120a / B200 sm_100, CUDA 13)** | 2.12.0 (cu130) | 13.0 | 10.15.1.29 | `qlip.core[blackwell]` |
+**Or install by hand.** The device stack for each GPU is in its own requirements
+file (`requirements_nvidia.txt` / `requirements_blackwell.txt`). Install torch
+FIRST (from PyTorch's index — the `+cuXXX` build isn't on PyPI), then the device
+requirements. From the ComfyUI root, with the venv active:
 
-#### Blackwell (RTX 5090 / B200) — exact install order
-
-The command above is the **H100 / CUDA 12** path. **Blackwell (CUDA 13) needs a
-specific order** — installing it in one shot does **not** work, because both
-ComfyUI's `requirements.txt` and the released `qlip.core[blackwell]` wheel would
-drag in a cu12 torch and **downgrade torch 2.12+cu130 → 2.9.1+cu12, breaking the
-FP4 engines**. Run these four commands, in this order, in your ComfyUI venv
-(from the ComfyUI root; this sequence replaces both the `pip install -r
-requirements.txt` from Step 1 and the H100 command above):
-
+**Hopper / Ada (CUDA 12):**
 ```bash
-# 1. PyTorch cu130 FIRST, from PyTorch's index.
-#    (torchaudio 2.12.0 is NOT on the cu130 index — omit it here; a compatible
-#    older build is picked up in step 2 via the constraints file.)
+pip install torch==2.9.1 torchvision==0.24.1 torchaudio==2.9.1 \
+    --index-url https://download.pytorch.org/whl/cu128
+printf 'torch==2.9.1\ntorchvision==0.24.1\ntorchaudio==2.9.1\n' > /tmp/keep.txt
+pip install -r requirements.txt -c /tmp/keep.txt            # ComfyUI's own
+pip install -r custom_nodes/ComfyUI-Qlip/requirements_nvidia.txt -c /tmp/keep.txt
+```
+
+**Blackwell 5090 / B200 (CUDA 13)** — torch cu130 first, then the device file,
+then qlip with `--no-deps` last (its metadata would otherwise pull a cu12 torch
+over your cu130 build):
+```bash
 pip install --pre torch==2.12.0 torchvision==0.27.0 \
     --index-url https://download.pytorch.org/whl/cu130
-
-# 2. ComfyUI's own requirements, under a constraints file that pins the cu130
-#    stack so ComfyUI's unpinned `torch` line can't replace it. This installs
-#    everything ComfyUI needs (torchsde, av, kornia, comfy-kitchen, …).
 printf 'torch==2.12.0+cu130\ntorchvision==0.27.0\ntorchaudio==2.11.0\nnumpy==2.4.6\n' > /tmp/keep.txt
-pip install -r requirements.txt -c /tmp/keep.txt
-
-# 3. The Blackwell requirements (tensorrt-cu12 10.15, onnx, diffusers, …).
-#    This file intentionally does NOT install qlip — see step 4.
-pip install -r custom_nodes/ComfyUI-Qlip/requirements_blackwell.txt
-
-# 4. qlip LAST, with --no-deps so it can't pull in a cu12 torch or numpy<2.
-#    The wheel's numpy<2 metadata is over-strict — it runs fine on the numpy 2.x
-#    from step 3. --no-deps is what keeps your torch 2.12+cu130 intact.
+pip install -r requirements.txt -c /tmp/keep.txt            # ComfyUI's own
+pip install -r custom_nodes/ComfyUI-Qlip/requirements_blackwell.txt -c /tmp/keep.txt
 pip install "qlip.core[blackwell]" --no-deps \
-    --extra-index-url https://thestage.jfrog.io/artifactory/api/pypi/pypi-thestage-ai-production/simple
+    --extra-index-url https://thestage.jfrog.io/artifactory/api/pypi/pypi-thestage-ai-staging/simple
 ```
 
-Verify the stack survived (all three must print the expected versions):
+The installer does exactly this ordering for you — prefer it unless you're
+debugging a step.
+
+Verify:
 
 ```bash
 python -c "import torch, tensorrt, qlip; \
   print('torch', torch.__version__); print('trt', tensorrt.__version__); print('qlip OK')"
-# expect: torch 2.12.0+cu130 · trt 10.15.1.29 · qlip OK
+# Blackwell expect: torch 2.12.0+cu130 · trt 10.15.1.29 · qlip OK
 ```
 
-> **Why `--no-deps`?** Without it, `pip install qlip.core[blackwell]` re-resolves the
-> whole environment and drags torch back to a cu12 build — which cannot run the
-> sm_120a / sm_100 FP4 engines. `--no-deps` installs only qlip's code and leaves the
-> cu130 stack from steps 1–3 in place. This is required, not optional, on Blackwell.
->
-> **Expected pip warning after step 4.** Because qlip was installed with
-> `--no-deps`, any **later** `pip install` in this venv prints
-> `ERROR: ... qlip-core requires cvxpy / Cython / scikit-learn / thop, which are
-> not installed`. This is **benign for inference** — those packages back qlip's
-> model-analysis tooling (ANNA), not the engine runtime. Ignore it, or
-> `pip install cvxpy Cython scikit-learn thop` to silence it.
->
-> Key Blackwell pins (full list in `requirements_blackwell.txt`): torch 2.12.0+cu130 /
-> torchvision 0.27.0 (from the cu130 index), `tensorrt-cu12` 10.15.1.29, onnx 1.20.1
-> / onnxscript 0.7.0, diffusers 0.38.0, transformers 5.10.2. The hard requirements
-> for running NVFP4 engines are **CUDA 13 + `tensorrt-cu12` ≥ 10.15 + `qlip.core[blackwell]`**.
-> (Building new NVFP4 engines — not just running them — additionally needs an
-> FP4-capable qlip that exposes `NVIDIA_NVFP4_W4A4`; the released wheel is enough to
-> **run** the precompiled engines below.)
+> **Expected pip warning on Blackwell.** After the `--no-deps` qlip step, a later
+> `pip install` in this venv may print `ERROR: ... qlip-core requires cvxpy /
+> Cython / scikit-learn / thop, which are not installed`. It is **benign for
+> inference** — those back qlip's model-analysis tooling (ANNA), not the engine
+> runtime. Ignore it, or `pip install cvxpy Cython scikit-learn thop` to silence.
 
 ### Step 3: Setup TheStage API token
 
 Get your token at [app.thestage.ai](https://app.thestage.ai). Required for Qlip engine access.
 
-The `thestage` CLI is already installed by both requirements files in Step 2, so
-you only need to set the token:
+The `thestage` CLI is installed by both the installer and the node's
+`requirements.txt`, so you only need to set the token:
 
 ```bash
 thestage config set --access-token <YOUR_API_TOKEN>
 ```
 
-> If `thestage: command not found` (e.g. an older checkout whose requirements
-> didn't include it yet): `pip install thestage` and retry.
+> If `thestage: command not found`: `pip install thestage` and retry.
 
-> **⚠️ Misleading error — `Nvidia support is not available. Please install with
-> `pip install qlip.core[nvidia]``.** This message appears **even when qlip is
-> correctly installed** if your TheStage token is missing or invalid — qlip can't
-> activate its GPU backend without a valid token, and the error wrongly points at
-> the install. If you hit it while running an engine, **the fix is almost always the
-> token**, not reinstalling qlip: set a valid one with
-> `thestage config set --access-token <YOUR_API_TOKEN>` and retry.
+> **⚠️ Missing / invalid token looks like a broken install — it isn't.** With no
+> valid TheStage token, `import qlip` (or running an engine) fails in one of two
+> ways, **both of which mean "set your token", not "reinstall":**
+>
+> - `RuntimeError: [PyArmor] Validation failed.` — qlip's licensed runtime can't
+>   validate without a token, so the module won't even import.
+> - `Nvidia support is not available. Please install with
+>   `pip install qlip.core[nvidia]`` — misleading: qlip *is* installed, it just
+>   can't activate its GPU backend without a valid token.
+>
+> The fix for both is the token, not reinstalling qlip:
+> `thestage config set --access-token <YOUR_API_TOKEN>` and retry. (This is
+> expected right after `install.py` — the installer stops before the token step
+> on purpose.)
 
 ### (Optional) Download models
 

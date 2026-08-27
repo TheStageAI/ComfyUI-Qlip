@@ -31,7 +31,8 @@ to eager — the run never breaks.
 import time
 
 from .engine_loader import _validate_diffusion_model_input
-from ..utils.loom import (attach, dequantize_linears, detach, find_regions,
+from ..utils.loom import (attach, dequantize_linears, detach,
+                          ensure_untouched_linears_cast, find_regions,
                           freeze_scales, memoize_by_shape, quantize_linears,
                           release_masters, start_calibration, stats,
                           unmemoize)
@@ -139,6 +140,25 @@ class QlipCompile:
                 print(f"[QlipCompile] could not disable dynamic VRAM "
                       f"({exc}) — weights will stream, steps may be "
                       f"PCIe-bound")
+
+        # EAGER dtype guard: making the model resident (or comfy's newer
+        # CastBiasWeightContext) can leave OUT-OF-REGION Linears (Krea-2
+        # self.first/last/tmlp) with an fp32 master weight while activations
+        # are bf16 -> `mat1 and mat2 must have the same dtype` on the very
+        # first (warm-up) forward, BEFORE our deferred _install runs. Apply
+        # the guard now, scoped to the real block regions so region Linears
+        # (which get quantized later) are untouched. Idempotent with the
+        # copy _install() re-applies.
+        if enable:
+            try:
+                dm0 = patched.model.diffusion_model
+                _regs0 = find_regions(dm0, min_repeat=2)
+                ng = ensure_untouched_linears_cast(dm0, _regs0)
+                if ng:
+                    print(f"[QlipCompile] dtype-cast guard on {ng} "
+                          f"out-of-region Linear(s) (pre-install)")
+            except Exception as exc:   # noqa: BLE001 — never block arming
+                print(f"[QlipCompile] pre-install cast guard skipped ({exc})")
 
         # STREAMED (dynamic-VRAM) models: their loader owns weight
         # placement (vbar pools, per-cycle set_weight) — on-the-fly

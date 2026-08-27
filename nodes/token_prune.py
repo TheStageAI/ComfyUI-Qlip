@@ -15,7 +15,28 @@ If none is found the node prints a warning and stays a no-op (never breaks the r
 
 from .engine_loader import _validate_diffusion_model_input
 
-_ORIG_FORWARDS = {}     # id(block_list) -> not used; we patch the container's forward
+# Registry of live block-forward patches so we can cleanly REMOVE them when the
+# node is disabled (or re-armed). Without this, disabling QlipTokenPrune left the
+# first/last block monkey-patched AND a stale process-wide _PREV_HIDDEN buffer,
+# so pruning damage (accumulating noise via compensation="prev") survived the
+# toggle. Keyed by id(block) -> (block, original_forward).
+_PATCHED_BLOCKS = {}
+
+
+def _restore_all_patches():
+    """Remove every live token-prune block-forward patch and clear the qlip
+    process-wide prev-hidden buffer. Safe to call anytime (idempotent)."""
+    for _bid, (blk, orig) in list(_PATCHED_BLOCKS.items()):
+        try:
+            blk.forward = orig
+        except Exception:
+            pass
+    _PATCHED_BLOCKS.clear()
+    try:
+        import qlip.inference.token_prune_core as tp
+        tp._PREV_HIDDEN.clear()
+    except Exception:
+        pass
 
 
 def _find_block_list(dm):
@@ -78,8 +99,13 @@ class QlipTokenPrune:
     def apply(self, model, enable=True, keep_ratio=0.75, method="l2sq",
               compensation="prev", step_lo=0.2, step_hi=0.8):
         _validate_diffusion_model_input(model, "QlipTokenPrune")
+        # ALWAYS undo any previous token-prune patch + clear the process-wide prev
+        # buffer before doing anything — this makes disable actually disable, and
+        # re-arm start clean (no accumulated-noise carryover between runs).
+        _restore_all_patches()
         patched = model.clone()
         if not enable or keep_ratio >= 0.999:
+            print("[QlipTokenPrune] disabled — patches removed, prev buffer cleared.")
             return (patched,)
 
         try:
@@ -187,6 +213,9 @@ class QlipTokenPrune:
 
         first_blk.forward = first_forward
         last_blk.forward = last_forward
+        # register so a later disable / re-arm can restore the originals
+        _PATCHED_BLOCKS[id(first_blk)] = (first_blk, of_first)
+        _PATCHED_BLOCKS[id(last_blk)] = (last_blk, of_last)
         patched.model._qlip_token_pruner = pruner
 
         print(f"[QlipTokenPrune] armed on {attr} ({len(block_list)} blocks): "
