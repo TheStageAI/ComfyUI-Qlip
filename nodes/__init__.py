@@ -3,6 +3,7 @@ from .timer import QlipTimerStart, QlipTimerStop, QlipTimerReport
 from .cache import QlipCache, QlipCacheReport
 from .auto_sparse import QlipAutoSparse
 from .progressive import QlipProgressive
+from .spectrum_fit import QlipSpectrumFit
 # from .restart_sampler import QlipRestartSampler
 from .compile import QlipCompile, QlipQuantConfig
 # from .autopilot import QlipAutoPilot
@@ -21,6 +22,7 @@ __all__ = [
     "QlipCacheReport",
     "QlipAutoSparse",
     "QlipProgressive",
+    "QlipSpectrumFit",
     # "QlipRestartSampler",
     "QlipCompile",
     "QlipQuantConfig",

@@ -57,6 +57,30 @@ def radial_power(x):
     return torch.arange(rmax + 1).float(), P
 
 
+def fit_power_law(omega, P):
+    """Log-log least-squares fit P = A * omega_n^(-beta) on a mid frequency band
+    (skip DC and the Nyquist tail). P must already be SNR-normalized (divided by
+    the H*W white-noise floor). Returns (A, beta, r2, lo, hi).
+
+    Shared by the CLI below and the QlipSpectrumFit node."""
+    omega_max = float(omega[-1])
+    omega_n = omega / omega_max
+    lo = max(2, len(omega) // 16)
+    hi = int(len(omega) * 0.75)
+    logw = torch.log(omega_n[lo:hi])
+    logP = torch.log(P[lo:hi].clamp(min=1e-12))
+    M = torch.stack([logw, torch.ones_like(logw)], 1)
+    sol = torch.linalg.lstsq(M, logP.unsqueeze(1)).solution.squeeze(1)
+    slope, intercept = sol[0].item(), sol[1].item()
+    beta = -slope
+    A = math.exp(intercept)
+    pred = slope * logw + intercept
+    ss_res = ((logP - pred) ** 2).sum()
+    ss_tot = ((logP - logP.mean()) ** 2).sum()
+    r2 = (1 - ss_res / ss_tot).item()
+    return A, beta, r2, lo, hi
+
+
 DEFAULT_PROMPTS = [
     "A cinematic high-fashion editorial portrait of a woman in a black jacket, "
     "brutalist gallery",
@@ -127,23 +151,7 @@ def main():
     # FFT). Divide the signal power by that noise floor to get SNR(omega) —
     # resolution-independent, no anchor tuning.
     P = P / float(hh * ww)
-    # fit P = A * omega_n^(-beta) in NORMALIZED frequency omega_n = omega/omega_max,
-    # on a mid band (skip DC and the Nyquist tail).
-    omega_max = float(omega[-1])
-    omega_n = omega / omega_max
-    lo = max(2, len(omega) // 16)
-    hi = int(len(omega) * 0.75)
-    logw = torch.log(omega_n[lo:hi])
-    logP = torch.log(P[lo:hi].clamp(min=1e-12))
-    M = torch.stack([logw, torch.ones_like(logw)], 1)
-    sol = torch.linalg.lstsq(M, logP.unsqueeze(1)).solution.squeeze(1)
-    slope, intercept = sol[0].item(), sol[1].item()
-    beta = -slope
-    A = math.exp(intercept)
-    pred = slope * logw + intercept
-    ss_res = ((logP - pred) ** 2).sum()
-    ss_tot = ((logP - logP.mean()) ** 2).sum()
-    r2 = (1 - ss_res / ss_tot).item()
+    A, beta, r2, lo, hi = fit_power_law(omega, P)
 
     print(f"\n=== {args.model} spectrum fit "
           f"(n={len(prompts)}, {args.size}px, band [{lo},{hi}]) ===")

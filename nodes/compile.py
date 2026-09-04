@@ -95,6 +95,17 @@ class QlipCompile:
                                     "be PCIe-bound (same effect as "
                                     "--highvram, but only for this model). "
                                     "Disable to keep weight streaming."}),
+                "attention": (["comfy", "auto", "int8_fp8", "int8_fp16", "fp4"], {
+                    "default": "comfy",
+                    "tooltip": "Attention kernel inside the compiled blocks. "
+                               "comfy = whatever ComfyUI uses (SDPA, or sage if "
+                               "launched with --use-sage-attention; loom marks "
+                               "it opaque). auto/int8_fp8/int8_fp16/fp4 = qlip's "
+                               "own dependency-free SageAttention-class kernels "
+                               "(int8 Q/K + fp8 P·V; fp4 = Blackwell, phase 2). "
+                               "Applied to long unmasked self-attention only "
+                               "(>= 2048 tokens); everything else stays on the "
+                               "original path."}),
                 "weights_policy": (["keep", "release"], {"default": "keep",
                                    "tooltip": "release: after fp8/fp4 "
                                    "quantization FREE the master weights — "
@@ -118,9 +129,19 @@ class QlipCompile:
 
     def apply(self, model, enable=True, quantize="none", backend="default",
               act_scales="calibrate-first-run", quant_config=None,
-              force_resident=True, weights_policy="keep"):
+              force_resident=True, weights_policy="keep", attention="comfy"):
         _validate_diffusion_model_input(model, "QlipCompile")
         patched = model.clone()
+        from ..utils.qattn_router import (install_attention, polish_external_sage,
+                                          uninstall_attention)
+        # attention kernel selection is its own axis (process-wide: comfy's
+        # optimized_attention) — applied even when compile is disabled, so the
+        # kernel can be A/B'd on the eager model too.
+        polish_external_sage()
+        if attention != "comfy":
+            install_attention(attention)
+        else:
+            uninstall_attention()
         if not enable:
             _uninstall(patched.model.diffusion_model)
             return (patched,)
@@ -259,6 +280,14 @@ class QlipCompile:
                 try:
                     detach(dm)
                     dequantize_linears([dm])
+                except Exception:   # noqa: BLE001
+                    pass
+                # detach() strips the out-of-region dtype-cast guards, but the
+                # force_resident conversion done at arming time is NOT rolled
+                # back — so the untouched model would now crash on its fp32
+                # first/last projections (mat1/mat2 dtype). Re-arm the guard.
+                try:
+                    ensure_untouched_linears_cast(dm, find_regions(dm, min_repeat=2))
                 except Exception:   # noqa: BLE001
                     pass
                 _ACTIVE.pop(id(dm), None)

@@ -146,7 +146,30 @@ Point a coding agent (Claude Code / Codex / Cursor) at **[`AGENTS.md`](AGENTS.md
 - **hands you ready-to-run workflows** — `best_workflow.json` plus one for *every* point
   on the frontier (max-speed, max-quality, balanced — you pick), a speed×quality chart
   coloured by the judge's verdict (win/tie/lose vs eager), and a side-by-side collage so
-  you can *see* the quality, not just trust a number.
+  you can *see* the quality, not just trust a number;
+- **tells you what is wrong with the configs it rejected** — the arena's degradation
+  report names the defect per config in physical units (blur in px, veil fraction,
+  grain, texture loss, ghosting, contour wobble, and two learned axes: contour halo and
+  edge ringing), says on how many prompts it appears, and shows the image + the defect
+  map that proves it. You pick a config knowing its trade-off, not just its LPIPS.
+
+**Validate any change yourself — three commands, no agent needed.** Generated a
+baseline and a few candidate configs on the same prompts and seeds (with
+`arena gen`, or any way you like — the arena only reads an output folder)? Then:
+
+```bash
+cd /path/to/qlip-arena
+python -m qlip_arena.cli collect  --name base --src out_base/        # once per run
+python -m qlip_arena.cli collect  --name fast --src out_fast/
+python -m qlip_arena.cli fpcharts --b base --a fast fast-2 --out report.html
+```
+
+`report.html` is self-contained: the quality ranking, a defect × config matrix in
+words (slight / noticeable / strong), a radar where outward = better, per-axis charts,
+one plain-words line per prompt, and the evidence images. Have only a folder of
+outputs and no baseline? `python -m qlip_arena.cli qdm --images out_fast/` prints a
+defect passport per image. Reading guide: qlip-arena's
+`docs/EVALUATE_YOUR_MODEL.md`, section "Picking the best accelerated config".
 
 It runs against a **local or remote** ComfyUI, and treats the qlip runtime as a black box
 — it only ever uses the exposed node parameters, so nothing about your licensed install

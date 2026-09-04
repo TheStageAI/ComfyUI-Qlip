@@ -3,6 +3,7 @@ from .nodes import QlipTimerStart, QlipTimerStop, QlipTimerReport
 from .nodes import QlipCache, QlipCacheReport
 from .nodes import QlipAutoSparse
 from .nodes import QlipProgressive
+from .nodes import QlipSpectrumFit
 # from .nodes import QlipRestartSampler
 from .nodes import QlipCompile, QlipQuantConfig
 # from .nodes import QlipAutoPilot
@@ -21,6 +22,7 @@ NODE_CLASS_MAPPINGS = {
     "QlipCacheReport": QlipCacheReport,
     "QlipAutoSparse": QlipAutoSparse,
     "QlipProgressive": QlipProgressive,
+    "QlipSpectrumFit": QlipSpectrumFit,
     # "QlipRestartSampler": QlipRestartSampler,
     "QlipCompile": QlipCompile,
     "QlipQuantConfig": QlipQuantConfig,
@@ -41,6 +43,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "QlipCacheReport": "Qlip Cache Report",
     "QlipAutoSparse": "Qlip Auto Sparse",
     "QlipProgressive": "Qlip Progressive",
+    "QlipSpectrumFit": "Qlip Spectrum Fit",
     # "QlipRestartSampler": "Qlip Restart Sampler",
     "QlipCompile": "Qlip Compile",
     "QlipQuantConfig": "Qlip Quant Config",
