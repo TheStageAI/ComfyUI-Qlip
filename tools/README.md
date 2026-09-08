@@ -40,3 +40,7 @@ then fell below `delta`, the switch time went to 0, and the ladder stuck at low
 resolution. A few clean offline generations are a stable prior — run this once
 per model.
 ```
+
+## Reading the agent's `report/`
+
+See `READING_THE_AGENT_REPORT.md` in this folder; the arena's own pages and every metric are explained in the qlip-arena repo, `docs/READING_THE_REPORT.md` and `docs/METRICS.md`.

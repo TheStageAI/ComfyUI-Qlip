@@ -127,6 +127,236 @@ If a node you don't recognize appears, this same reading tells you what it is an
 use it — treat it first-class. (Fallback when ComfyUI isn't up: parse `INPUT_TYPES` from
 `nodes/*.py` and read `tools/README.md`.)
 
+## 2b. Operating manual — what each lever physically does and how to drive it
+
+§2 gives you the parameter surface; this section gives you the physics, so that
+every value you try is a hypothesis with an expected speedup and an expected
+defect, not a random draw. Read it once per run; cite the relevant rule in each
+JOURNAL hypothesis ("H12: cache thr 0.15 → 0.20; expect skip ratio 0.35→0.45,
+speedup 1.5→1.7×; risk: texture tail per 2b-B").
+
+### 2b-0. Where the time goes (do this BEFORE choosing a lever)
+
+Wall time of one image ≈ `N_steps × (tokens × cost_per_token_per_block × n_blocks)`
++ VAE + text encoders. Three independent multipliers, three families of levers:
+
+| multiplier | lever family | node | saves |
+|---|---|---|---|
+| number of steps actually computed | **step cache** | QlipCache (mode=step) | whole model calls |
+| tokens per call | **resolution** | QlipProgressive, QlipRestartSampler; QlipTokenPrune (video) | tokens ∝ (latent side)² — a ×0.5 rung is 4× fewer tokens |
+| cost per token | **attention / kernels** | QlipAutoSparse, QlipDrafter (video); QlipCompile (fp8/fp4, sage-class attention) | attention share only (Amdahl) |
+| blocks per call | **block cache** | QlipCache (mode=block) | middle blocks |
+
+Measure, don't guess: (a) `N_steps` from the scheduler; (b) tokens = latent
+H×W / patch² (+ text tokens); (c) the attention share ≈ tokens / (tokens + hidden)
+— above ~10k tokens (video, 2K images) attention dominates and the sparse levers
+pay, below it they are Amdahl-capped at ~1.05–1.1× (measured: pixel-identical
+no-ops on a 6k-token image model). Write these three numbers in JOURNAL first;
+they predict which family can give 2× and which cannot.
+
+Expected speedups (sampler only; add the fixed VAE/text-encoder overhead from
+`--overhead` to get end-to-end):
+
+```
+step cache      : 1 / (1 − skipped_steps / N)              (QlipCacheReport prints skipped/N)
+progressive     : 1 / (1 − f_low · (1 − s²))               f_low = share of steps at rung s (node log prints the σ ladder)
+block cache     : 1 / (1 − skipped_blocks / n_blocks)      (report prints "real / skipped of n")
+sparse attention: 1 / (1 − attn_share · sparsity)          (upper bound; real kernels keep some overhead)
+combined        : multiply — but each lever raises the next one's error, so stack mild rungs, not aggressive ones
+```
+
+### 2b-1. Node insertion order and wiring
+
+On every `MODEL` line, from the loader to the sampler:
+
+```
+Loader ─► [QlipEnginesLoader | QlipCompile]  ─► QlipProgressive ─► QlipCache ─► [QlipAutoSparse | QlipTokenPrune | QlipDrafter] ─► sampler
+             model definition (baseline)         resolution         steps/blocks     attention / tokens (video)
+```
+
+- **Model-definition nodes first** (compile / engines / LoRA): they define the
+  baseline and are never toggled per config.
+- **Progressive before Cache.** The cache decides skips from the change between
+  consecutive model outputs; it must see the outputs the progressive hook
+  produces (already upscaled to full res), otherwise its error budget is read on
+  the wrong tensor. Progressive → Cache is the validated order.
+- **Attention / token levers last**, closest to the sampler; they act inside the
+  blocks and are transparent to the two hooks before them.
+- `QlipAutoPilot` REPLACES Progressive + Cache (one knob, its own controller):
+  never chain it with them.
+- `QlipRestartSampler` is a SAMPLER, not a model hook: wire it into
+  `SamplerCustom.sampler`; it is mutually exclusive with QlipProgressive in one
+  config (both change the latent grid).
+- `QlipSpectrumFit` (or `tools/fit_spectrum.py`) runs ONCE per model+resolution
+  before any spectral progressive config; wire the same `EmptyLatentImage` the
+  sampler uses.
+- Timers: `QlipTimerStart` on the guider/model just before the sampler,
+  `QlipTimerStop` on the sampler output, `QlipCacheReport` after decode — the
+  reports are how you read skip ratios and the σ ladder.
+- **Several MODEL lines** (dual-model guider, high/low experts): the same chain
+  on each line, own node ids (§3). Verify with the node log that the second
+  line's hooks actually fire ("… of 96" vs "… of 48" calls): on some samplers
+  the framework serves both passes with the first model's wrappers, and a hook
+  on the second line is silently inert (measured on ComfyUI's dual-model guider).
+
+### 2b-2. QlipProgressive — resolution lever (image AND video)
+
+**Physics.** Diffusion decides composition at high σ (large structures, low
+spatial frequencies) and details at low σ. Early steps therefore do not need the
+full grid: run them on a latent of side `low_scale × full` (×0.5 side = 4× fewer
+tokens), upsample the prediction, continue at full res. Savings ∝ share of steps
+spent low-res. **Defects come from exactly two places:** (1) the low-res steps
+also decide the composition — on many-step models a ×0.5 start can pick a
+*different* layout (the comparison mode reads "layout moved / scene replaced");
+(2) the upsampling of contours: a translucent veil / halo along edges (born on
+the ×0.25 rung), resample blur when the rung is not an integer factor (×0.75).
+
+**Parameters and what they do:**
+- `low_scale` — the starting rung. 0.25 = maximal token saving, veil risk;
+  0.5 = the normal rung; 0.75 = little saving, resample blur (avoid).
+- `switch_mode=sigma` + `switch_at` — ONE switch at a fraction of the σ range:
+  the simplest, most predictable schedule; speedup ≈ `1/(1 − switch_at·(1 − s²))`.
+- `switch_mode=auto` + `backbone_mode` — a ladder ×s → … → full: `empirical` grows
+  at fixed σ (0.9 → ×0.25 … 0.75 → ×0.5), `spectral` grows when the data spectrum
+  (fitted `speed_A`, `speed_beta`) says fine detail is needed, tuned by
+  `speed_delta` (smaller = stay low-res longer). The node log prints the σ at
+  which it scaled up — READ IT: if it grows to full above σ ≈ 0.85 the low-res
+  phase is empty and the speedup ≈ 1.05× (flat-spectrum models, small β).
+- `verify_sigma` — full-res correction steps while σ/σ₀ ≥ value: repairs the
+  contour noise/veil born at low res; 0.9 catches the three aggressive structure
+  steps, 1.0 only the first; costs ≈ 2 full steps.
+- `carry_prev` OFF and `up_mode=edge` — two free veil fixes (band-split signal /
+  edge-masked upscale); `bicubic` = slightly sharper, `nearest` = worse.
+
+**Ladder from strong to acceptable** (one config per rung, judge each):
+1. *Strong*: `sigma`, `low_scale 0.5`, `switch_at 0.65` → ≈1.7× on 48 steps, ≈2× on
+   8-step turbo. Read the comparison mode: if > 25 % of prompts have the scene
+   replaced, this rung is a **creative** point, not a faithful one.
+2. Bring composition back: `switch_at 0.5 → 0.35`, or `auto` empirical; then
+   `verify_sigma 0.9` (composition fixed at step 0, veil repaired) — expect
+   the speedup to drop to ≈1.1–1.3× on many-step models, stay ≈1.6–2× on
+   turbo samplers where the veil is the only issue.
+3. If the veil/halo axis still fires: `carry_prev=false`, `up_mode=edge`
+   (free), then `low_scale 0.5` if you were at 0.25.
+4. Principled schedule: `auto` + `spectral` with the fitted A/β and a
+   `speed_delta` sweep (0.005 / 0.01 / 0.05 / 0.1) — pick the largest delta whose
+   ladder still spends ≥ 30 % of the steps low-res (log) and passes the gate.
+5. Pair the acceptable rung with a mild cache (2b-3); never pair the strong
+   rung with an aggressive cache — the texture tail stacks (measured).
+
+**Acceptable** = passes the two-part gate (§4b) AND ≥ 75 % of prompts aligned.
+On few-step (turbo) models progressive is the main lever and reaches 2× within
+that; on 40+-step models it reaches 1.5–1.7× only as a creative point — report
+it as such, and let the cache carry the faithful frontier.
+
+### 2b-3. QlipCache — step cache (mode=step) and block cache (mode=block)
+
+**Physics.** Consecutive denoising steps produce nearly the same residual on the
+plateau of the trajectory; the cache measures the change and, while an error
+budget (`threshold`) is not exceeded, reuses the previous residual instead of
+calling the model (`easycache`) or extrapolates it (`taylor`, `hermite`). Savings
+= skipped calls. **Defects:** skipped steps lose the fine detail those steps
+would have added (texture loss, `detail_loss`), skip/compute alternation leaves a
+tile grid on flat areas (`grid_db`), extrapolation adds speckle (`texture_gain`)
+and, at high order, re-decides the composition; too few warmup steps change the
+layout. Few-step distilled models have no plateau — step cache is a no-op there
+(use block mode or progressive).
+
+**Parameters:**
+- `threshold` — the error budget; the only knob that moves speed. Read
+  `QlipCacheReport`: skipped/N gives the speedup directly. 0.05 = nothing
+  skipped (no-op ≈1.0×); 0.10 → ~20–25 % skipped; 0.15 → ~35 %; 0.20–0.25 → ~45 %
+  but the texture tail fails.
+- `method` — `easycache` (reuse; robust; DEFAULT), `hermite` order 1 ≈ easycache,
+  `hermite` order ≥ 2 / `taylor` = extrapolation (speckle, composition drift on
+  many-step models).
+- `warmup_steps` — first steps always computed; they set composition. 4 is the
+  floor; raising it costs speed linearly and rarely binds (measured 2/4/8 identical).
+- `max_consecutive_skips` — cap on error compounding; 3 is right, 2 costs speed
+  without a measurable quality gain.
+- `mode=block` — `fn_blocks` first blocks always compute and act as the probe,
+  middle blocks are skipped, `bn_blocks` last blocks refine. More `fn_blocks` =
+  safer and slower (fn16 ≈ eager, fn8 ≈ 1.27×, fn4 = mesh+haze); it also works on
+  few-step models and gives the cleanest tile grid; on multi-model guiders it
+  effectively caches the conditional model only.
+
+**Ladder from strong to acceptable:**
+1. *Strong*: `easycache`, step, `threshold 0.25` → the maximum skip ratio; expect
+   texture p90 to fail the gate.
+2. `threshold 0.20 → 0.15 → 0.10` until the gate passes; 0.15 is the usual
+   acceptable point (≈1.5× on 48 steps), 0.10 the safe one (≈1.2×).
+3. If the tile grid (`grid_db` > 8 dB) or the texture tail is the blocker at the
+   speed you want, switch to `mode=block`, `threshold 0.08`, `fn_blocks 12`
+   (1.2×, cleanest) and walk `fn_blocks 12 → 8` / `threshold 0.08 → 0.10`.
+4. Probe `hermite` order 1 at the same threshold (usually identical) and
+   order 2 / `taylor` once for coverage — do not refine them.
+
+### 2b-4. QlipAutoSparse, QlipDrafter, QlipTokenPrune — video / long-sequence levers
+
+**Physics.** Attention cost ∝ tokens²; when tokens ≥ ~10k (video, 2K+ images)
+attention is > 50 % of the step and dropping attention blocks (`sparsity`) or
+tokens (`keep_ratio`) pays; below that the levers are Amdahl-capped (measured
+0.96–0.98× on a 6k-token image model: pixel-identical output, no speedup).
+**Defects:** dropped blocks/tokens lose long-range consistency (flicker, drift,
+texture pumping on video); the "diversity" selector and the `sla` compensator
+exist to keep the distinct blocks.
+
+**Ladders:**
+- AutoSparse: `selector=diversity`, `sparsity 0.5 → 0.7 → 0.9` (0.7 is the
+  validated fast point); then `correction=sla` at the chosen sparsity (the
+  fast+quality path); `selector=tau` with `tau 1.0 → 2.0` for an adaptive budget.
+  `smooth_k` stays on.
+- Drafter: `split_step` = the step from which late steps are sparse-drafted;
+  start at N/2 with `sparsity 0.9`, move the split later (N·0.6, N·0.75) until the
+  temporal axes pass; earlier split = faster + drift.
+- TokenPrune: `keep_ratio 0.75 → 0.6 → 0.5` inside the `step_lo 0.2 – step_hi 0.8`
+  window (early structure and late detail steps stay full); `compensation=prev`.
+  If it crashes on a joint text+image token stream, log the signature and exclude.
+- Only on video: combine the best sparse/prune point with a mild step cache.
+
+### 2b-5. QlipRestartSampler (image, few-step) and QlipAutoPilot (one knob)
+
+- RestartSampler grows the latent grid at `switch_step` and restarts the
+  trajectory (`up_mode=carry` re-noises with the trajectory's own noise — the
+  clean choice on few-step models; fresh-noise modes need `renoise_strength 1.0`).
+  Ladder: `switch_step` N/2 → N/4 (`low_scale 0.5`), then `low_scale 0.25` once.
+  It replaces the sampler; it cannot be combined with QlipProgressive.
+- AutoPilot: `quality_target` 0.97 → 0.95 → 0.90: a single error-ledger knob that
+  drives cache and progressive itself. Probe it as its own config family (it
+  cannot be chained with Progressive/Cache); it is the right answer when the
+  client wants one slider rather than a frontier.
+
+### 2b-6. QlipCompile — the baseline lever
+
+Compilation (per-block torch.compile + fp8/fp4 GEMM + a sage-class attention
+kernel) raises the whole baseline: `quantize=fp8` on Hopper+, `fp4` on Blackwell,
+`attention=auto` for long sequences, `act_scales=calibrate-first-run` (then
+`--warmup 2` in `arena gen` on EVERY config, or the timing is wrong). It is not a
+per-config toggle: when present, it defines `<model>-engine` as the baseline
+(§3) and every lever above is measured relative to it. If it is absent, note in
+REPORT.md that it is available as the offline step that raises everything.
+
+### 2b-7. How to read "acceptable" and how to walk the ladder
+
+Acceptable = the §4b two-part gate (typical prompt at most *slight*, worst 10 %
+not *strong*) on `texture, texture_gain, noise, haze, halo, mesh` AND the
+comparison mode faithful (≤ 25 % scene replaced) AND adherence not worse. The
+procedure per lever is always the same three moves:
+
+1. **Start at the strong rung** of the ladder above (one config): it tells you
+   the ceiling of that lever on this model and which axis breaks first.
+2. **Walk down one knob at a time** — the knob that owns the failing axis (2b-2/3
+   name it: veil → verify/carry/edge; texture tail → threshold; grid → block mode;
+   composition → switch_at/warmup) — until the gate passes. That config is the
+   lever's acceptable point; the previous rung is its speed ceiling.
+3. **Combine** the acceptable points of two levers (resolution × steps), never
+   the strong ones; then refine the two corners of the frontier by one
+   neighbouring value each (§5).
+
+Log every step with the expected number from the formulas in 2b-0 and the
+measured one; a lever whose measured speedup is within 0.05 of 1.0 or whose
+images are byte-identical to eager is a no-op — reject it, do not refine it.
+
 ## 3. Prepare the workflow (you do this, not the human)
 
 The human hands you a workflow. It may be UI- or API-format, and it may already contain
@@ -172,10 +402,31 @@ qlip nodes (fine — see baseline cases). You:
 4. Save as `<work>/<model>_qlip_api.json`. Record which node_id is which qlip node —
    those are your `--set node_id.input=value` targets.
 
+5. **Check the baseline for blocked outputs.** Some models return a placeholder
+   instead of a picture — a flat grey "Image blocked by safety filter" card, a black
+   frame — for prompts their safety filter refuses. The arena detects these
+   (`media.is_blocked`, luma std of a thumbnail < 0.035; `store.blocked_keys(run)`)
+   and **excludes those prompts from every battle automatically** (a grey card vs a
+   grey card is not a comparison). Your job: after the baseline `gen`, print the
+   count (`python -c "from qlip_arena import store; print(store.blocked_keys('<model>-eager'))"`)
+   and record it in JOURNAL. If more than ~25 % of the suite is blocked, the effective
+   suite is too small for `--n 16` — raise `--n` so that ≥ 16 *unblocked* prompts
+   remain. Never replace the suite or hand-pick prompts: the exclusion is the
+   baseline's refusal, reported as such in the report ("Excluded prompts" line).
+
 ## 4. The metric — arena is the judge; LPIPS gates, Elo ranks preference
 
 Everything is measured through **qlip-arena** — never eyeball quality.
 
+- **Two speeds of judging — a deliberate limitation.** In the SEARCH LOOP every
+  config is judged by the preference judge only (`arena verdict --light`: PickScore
+  win-rate → Δelo, plus the speedup from the run meta). It is cheap in GPU and, more
+  importantly, in tokens: one line per config. It is also **measurably blind** to
+  veil, halo, mesh and speckle — so the loop's frontier is provisional. At CLOSURE
+  the frontier set (plus a margin of runners-up) gets the full degradation judge
+  (`arena verdict` / `arena fpcharts`: every axis, the two-part gate, the comparison
+  mode, the rank with CI), and the final choice is made from that table. Never
+  recommend from the light readout.
 - Objective: **max speedup subject to passing the arena's degradation gate** (§4b:
   `arena gate` on the fpcharts axes + a fpcharts quality rank whose CI overlaps the
   leader's or is within 1.0 of it). `mean_lpips ≤ tol` (default tol=0.35 image) is
@@ -238,49 +489,47 @@ contours — the signature of aggressive progressive schedules) and `ringing`
 
 Use it in two places:
 
-1. **Per config, in the loop** (cheap, CPU ≈ 0.5 s/pair; the learned axes use the GPU
-   if present): after step 4 also run
+1. **In the loop — per BATCH, the light readout only.** After a batch of configs has
+   generated (§5, 8–12 per round), run ONE command over the whole batch:
    ```
-   arena judge --a <cfg> --b <baseline> --judge fingerprint
-   arena inspect --a <cfg> --b <baseline>          # one plain-words line per prompt
-   arena fpcharts --b <baseline> --a <all retained cfgs> <cfg> --out <work>/report/degradation.html
-   # the defect gate = two checks (typical prompt + bad tail), both must pass:
-   arena gate --data <work>/report/fpcharts_data.json --config <cfg> \
-              --max texture --max haze --max halo --max mesh --stat median      # typical prompt ≤ threshold ("slight" at most)
-   arena gate --data <work>/report/fpcharts_data.json --config <cfg> \
-              --max texture=0.30 --max haze=0.20 --max halo=0.10 --max mesh=0.20 --stat p90   # worst 10 % ≤ 2×threshold (no "strong")
+   arena verdict --light --b <baseline> --a <cfg1> <cfg2> … --out-json <work>/verdicts/batchN.json
    ```
-   (2×threshold is the arena's "strong" band; the limits above are 2× the
-   thresholds in `fpcharts_data.json` → `summary.thresholds`. `tools/qlip_report.py
-   --fpcharts` applies exactly this two-part gate itself.)
-   `fpcharts` is regenerated over the whole retained set every iteration (it only
-   judges what is missing, so it is cheap) — its verdict block is the current state
-   of the search: the quality ranking with CI/p_best, the defect × config matrix and
-   the **comparison mode** per config. Read three things from it for the new config:
-   - **gate**: exit 0/1 from `arena gate` (p90 tails). Exit 1 → the config is
-     REJECTED for the recommendation whatever its LPIPS/Elo; it may stay on the
-     frontier only as a labelled "fails gate: <axis>" point.
-   - **rank**: its position in the fpcharts quality ranking; a rank CI overlapping
-     the leader's is a tie, not a loss.
-   - **mode**: `aligned` / `layout moved` / `scene replaced` counts. A config that
-     replaces the scene on > 25 % of prompts (or moves the layout on > 50 %) is a
-     **re-deciding** config: it is judged on structure + the learned axes only, its
-     LPIPS is meaningless as quality, and it can only be recommended as a separate
-     "creative / non-faithful" operating point — never as the default best. Run
-     `arena adherence` on it (share worse ≤ 0.2 required).
-   Write the JOURNAL "WHY" from the axis that fired — `texture +0.23 (strong on
-   4/16), haze p90 +0.18, mode: 9/16 scene replaced` beats "looks worse" or "lpips
-   0.41". A config whose LPIPS is fine but whose `halo`/`texture`/`mesh` axis crosses
-   the threshold is a config the user WILL see — log it and reject it. Chain
-   hypotheses from the axis, not from LPIPS: veil → `verify_sigma`/milder
-   `low_scale`; texture loss → earlier switch / `carry_prev`; halo → the schedule is
-   too aggressive at the switch, not a cache problem; scene replaced → the low-res
-   rung decides the composition, so start higher (`low_scale`) or verify earlier.
-2. **At closure, for the frontier** — one command over the frontier configs, ordered
-   mild → aggressive, gives the client-facing page:
+   One line per config: `speedup · win-rate · Δelo [CI] · W/T/L · n`. That is all you
+   read in the loop — no fingerprint, no inspect, no fpcharts, no HTML, no raw logs.
+   Frontier law in the loop: RETAIN a config if it improves speed at a non-worse Δelo
+   (CI-aware: Δelo intervals that overlap are the same) or improves Δelo at the same
+   speed; DISCARD dominated; REJECT no-ops (speedup within 0.05 of 1.0) and crashes.
+   Write the JOURNAL "WHY" as `1.49x, elo −41 [−90,+5], 2/13/2` — one line per config.
+   Known blind spots of this readout (measured): a veiled, haloed, meshed or speckled
+   image can WIN the preference vote. Do not try to compensate in the loop; the
+   closure step catches it. Chain hypotheses from the Δelo-vs-speed shape and the
+   physics of §2b, not from axes you did not measure.
+
+2. **At closure, for the frontier + a margin.** Take the loop's Pareto front on
+   (speedup, Δelo) AND the runners-up that the blind readout might have misplaced:
+   every retained config within 0.05× speed or within the Δelo CI of a frontier
+   point, up to ~10 configs. Run the FULL judge over that set once:
+   ```
+   arena verdict --b <baseline> --a <frontier+margin> --out-json <work>/report/verdict_final.json
+   ```
+   (fingerprint + pickscore auto-judged; prints per config: speedup, the two-part
+   gate with the failing axes, faithful / creative / rejected, comparison mode,
+   quality rank with CI, LPIPS if qlipmetrics was run). **Make the final choice from
+   this table**: the fastest *faithful* config whose rank CI overlaps the best
+   faithful one (the §4 rule); if the loop's favourite fails the gate, take the next
+   survivor — do NOT reopen the search, report it as the cost of the light loop. Then,
+   over the same set (ordered mild → aggressive), the client-facing page:
    ```
    arena fpcharts --b <baseline> --a <cfg1> <cfg2> <cfg3> --out <work>/report/degradation.html
    ```
+   Do NOT put every searched config on the client page — 30+ columns of matrix, radar
+   and charts are unreadable and the reader cannot act on them. The all-config
+   fpcharts you use for the decision goes to `<work>/report/all/` (for the journal and
+   for `qlip_report.py --fpcharts`, which needs every config's summary to classify
+   them); the client sees the frontier page. `qlip_report.py` does the same by default
+   (`--report-set frontier`): charts, collage and `workflows/` cover the frontier set,
+   the rest is listed by name with the reason (dominated / no-op / gate) and kept in
+   `report.json`.
    It auto-judges what is missing (fingerprint + preference) and renders: the quality
    ranking, a summary table, the **defect × config matrix** ("which defect appears where",
    incl. "noticeable on 2/16 prompts" for intermittent ones), a radar (outward = better
@@ -288,6 +537,11 @@ Use it in two places:
    worst pair per config with a ×4 diff, and for the learned axes the model's own defect
    map (bright = where the halo is). **Attach this html next to `frontier.png`**; the
    REPORT.md "rejected hypotheses" must cite its axes.
+
+   Also at closure only, over the frontier set: `arena judge --judge qlipmetrics`
+   (LPIPS for the report), `arena judge --judge ensemble` (Δelo with HPSv2 for the
+   registry export), `arena adherence` for every creative point, `arena export` for
+   every config that goes into `report/`.
 
 No baseline at hand (e.g. checking a single output folder)? `arena qdm --images <dir>`
 scores each image alone and prints a one-line defect passport in words.
@@ -297,7 +551,7 @@ Two more checks that belong in the closure gate:
   two frontier points whose rank CIs overlap are NOT separated by the data — say so in
   REPORT.md instead of declaring a winner by 0.1 rank.
 - **Machine gate.** The two-part `arena gate` from the loop above (median ≤ threshold
-  AND p90 ≤ 2×threshold on texture / haze / halo / mesh) returns exit 1 when a config's
+  AND p90 ≤ 2×threshold on texture / texture_gain / noise / haze / halo / mesh) returns exit 1 when a config's
   typical prompt is noticeably defective or its bad tail is strong; a config that fails
   the gate cannot be the recommended best, whatever its LPIPS or Elo. For distillation / step-pruning levers also run
   `arena adherence --a <cfg> --b <baseline>` (prompt adherence + seed diversity) and
@@ -357,6 +611,62 @@ the SAME steps and produce a byte-identical image (seen: verify_sigma 0.85 == 0.
 When two values give identical output, that axis is saturated there — record it and
 move the value further apart, don't count it as two points.
 
+### Practitioner priors — where to START each lever (measured, not guessed)
+
+The axes above are the coverage floor; the ORDER you try values in decides how
+fast the frontier fills. These starting points come from measured runs (Krea-2,
+MiniMax-H3, Ideogram-4) and beat the node tooltips' old defaults:
+
+- **QlipCache: `method=easycache`, `mode=step` first.** It has been the best
+  quality/speed cache on every model so far. Sweep `threshold` 0.10 → 0.15 → 0.20
+  (0.05 is usually a no-op ≈ 1.0×; ≥ 0.25 tends to re-decide the scene). `warmup_steps`
+  and `max_consecutive_skips` rarely bind — check ONE alternative value, and if the
+  images are byte-identical mark the axis saturated. `hermite` order 1 ≈ easycache;
+  order ≥ 2 and `taylor` extrapolate and, on many-step models, replace the composition
+  and add mesh — probe them once for coverage, do not refine them. `mode=block` is a
+  secondary axis (cleaner tile-grid, but see the multi-line caveat: its controller is
+  process-global, so with several MODEL lines only one line gets block caching).
+- **QlipProgressive: `backbone_mode=spectral` WITH the fitted `speed_A/speed_beta`
+  first** (`tools/fit_spectrum.py`, §7) — it is the principled schedule and, when the
+  fit is right (R² ≥ 0.95), the best progressive point; `empirical` is the fallback
+  when the fit cannot be produced, not the starting point. `low_scale` 0.5 (0.25 is
+  the veil/haze rung), `carry_prev` on, `up_mode` bilinear; add `verify_sigma` 0.9
+  only when the veil / halo axis fires. **Sweep `speed_delta`** (0.005 / 0.01 / 0.05)
+  with spectral: the SPEED rule grows the grid when the data spectrum says detail is
+  needed, so on a model with a FLAT spectrum (small β, e.g. Ideogram-4 β ≈ 1.1) the
+  default delta 0.01 grows to full res after ~5 % of the steps and the speedup
+  collapses to ~1.05× — the node log prints the σ at which it scaled up; if that is
+  above 0.85, raise delta or use `switch_mode=sigma` with `switch_at` 0.5–0.65.
+  Progressive IS fast on many-step models too (1.5–1.7× measured on Ideogram-4 at
+  sigma 0.5–0.65) — but there the composition is decided in the low-res steps, so
+  those points land in the **creative** class (scene re-decided on ~30 % of prompts);
+  the faithful class keeps only the variant with a full-res verify at step 0
+  (~1.1×). Report both classes; which one the client wants is their call.
+- **Combination**: best faithful cache + best faithful progressive is the first
+  combo to run; stacking an aggressive rung with an aggressive threshold stacks
+  defects (texture tail) — measured, do not expect it to add up.
+- **Multi-line graphs** (§3/§5): the asymmetric cache (unconditional line at a
+  higher threshold) is usually the cheapest extra speed with near-zero defect cost —
+  run it right after the symmetric sweep.
+
+### Token economy — how to run this without reading yourself to death
+
+The expensive resource is not the GPU, it is your context. Rules:
+- **Batches, not single configs.** Plan 8–12 configs per round from the §2b ladders,
+  queue them as ONE detached job, arm ONE wait for `BATCH DONE`. One wake-up per
+  batch, never per config.
+- **One table per batch.** `arena verdict --light` over the batch is the only thing
+  you read. Never open fpcharts HTML, never `cat` generation logs or ComfyUI logs —
+  `tail -3` of the batch log on failure only, `grep -c` for progress.
+- **Journal in lines, not prose.** One line per config (name · --set delta · speedup ·
+  Δelo [CI] · W/T/L · verdict); a hypothesis is one line with the 2b-0 expectation.
+- **No re-derivation.** Read `/object_info` once, write the parameter table to the
+  journal, never re-print it. Fit the spectrum once.
+- **Heavy artifacts once.** fingerprint, qlipmetrics, ensemble, adherence, inspect,
+  fpcharts, qlip_report, collage — all at closure, all over the frontier set + margin.
+- **Sync less.** JOURNAL/STATUS to the local work dir once per batch, the report at
+  the end.
+
 ### The loop (one hypothesis per iteration, chained from the last result)
 
 ```
@@ -364,28 +674,30 @@ move the value further apart, don't count it as two points.
               of which levers are still uncovered.
 2. Propose    ONE hypothesis = a specific config that either covers an untouched axis or
               is expected to beat the frontier, with a one-line rationale grounded in the
-              PREVIOUS results (not blind). Chain from the last root-cause (e.g. "prog
+              PREVIOUS results (not blind) AND in the physics of §2b: which multiplier it
+              attacks, the expected speedup from the 2b-0 formula, the defect it risks and
+              the knob that owns that defect. Chain from the last root-cause (e.g. "prog
               pinned at 0.58 = veil → add verify" → "verify killed speed → pair with
               cache to buy it back").
 3. Preflight  validate --set against §2 ranges + mode conditions (backbone_mode only if
               switch_mode=auto; fn_blocks only if mode=block; restart replaces KSampler).
-4. Run        arena gen --name <cfg> --set ... --n 16
-              arena judge --a <cfg> --b <baseline> --judge qlipmetrics
-              arena judge --a <cfg> --b <baseline> --judge ensemble    # BOTH — Elo matters
+4. Run        arena gen --name <cfg> --set ... --n 16        (queue the whole batch, one
+              detached job, ONE wake-up when the batch log says BATCH DONE)
+              arena verdict --light --b <baseline> --a <batch…>   # the only judge in the loop
 5. Node fails a config crashes (dtype/kernel/license)? Do NOT stop. Retry the SAME lever
               with different params (e.g. quantize=none instead of fp8); if still broken,
               EXCLUDE it and log JOURNAL-rejected with the error signature. One dead node
               never blocks the search.
-6. Export     arena export --a <cfg> --b <baseline> --judges qlipmetrics,ensemble
-              --out results/<cfg>__vs__<baseline>.json --overhead <s>
+6. Export     (at CLOSURE only, for the frontier set) arena export --a <cfg> --b <baseline>
+              --judges qlipmetrics,ensemble --out results/<cfg>__vs__<baseline>.json --overhead <s>
 7. Log --set  append to <work>/configs.jsonl: {"name":"<cfg>","set":"--set ..."}
               (arena does NOT store overrides — this file feeds best_workflow.json and
               the frontier's --set column. REQUIRED per config.)
-8. Record     append to JOURNAL, update STATUS. Frontier law (quality = the fpcharts
-              quality rank, NOT LPIPS): RETAIN if quality OR speed improved (it's on
-              the frontier); DISCARD only if neither; REJECT if invalid (broken
-              OFF-identity, no-op ~1.0× claiming a gain, crash, `arena gate` exit 1,
-              or a re-deciding config outside the separate "creative" list).
+8. Record     append to JOURNAL (one line per config from the light table), update
+              STATUS once per batch. Frontier law in the loop: quality = Δelo (CI-aware);
+              RETAIN if speed OR Δelo improved; DISCARD if dominated; REJECT if invalid
+              (broken OFF-identity, no-op ~1.0×, crash). The defect gate and the
+              faithful / creative split are applied at closure (§4b-2), not here.
 9. Loop.      A single failure does NOT end the loop — log the signature, propose a
               MEANINGFULLY DIFFERENT next hypothesis.
 ```
@@ -418,8 +730,9 @@ certainly means axes were skipped, not that the frontier saturated — check the
 2. **OFF-identity proven**: baseline (all acceleration off) ≈ eager (mean_lpips ≈ 0).
 3. Every applicable lever's axes above covered, OR the lever excluded with a logged
    reason (crash signature / no-op / Amdahl-irrelevant for this modality).
-4. All three judges (fingerprint via fpcharts, qlipmetrics, ensemble) on every
-   retained config, and `arena gate` exit 0 on the recommended best.
+4. The full judge (`arena verdict` / fpcharts with every axis, plus qlipmetrics and
+   ensemble) on the frontier set + margin, and `arena gate` exit 0 on the recommended
+   best. The loop itself used the light readout only — say so in REPORT.md.
 5. The frontier names, explicitly: the **best-speed point and its quality cost**
    (which axes fired, from the defect matrix), and the **best-quality point and its
    speed cost**; re-deciding configs (scene replaced) are listed separately as
@@ -441,7 +754,8 @@ $VENV <ComfyUI-Qlip>/tools/qlip_report.py \
     --tol 0.35 \
     --out <work>/report \
     --model <model> --gpu "<your GPU>" \
-    --fpcharts <work>/report/fpcharts_data.json \  # REQUIRED: the arena verdict decides (gate, mode, quality rank)
+    --fpcharts <work>/report/fpcharts_data.json \  # REQUIRED: the fpcharts summary over the frontier set + margin (§4b-2) — the verdict decides
+    --report-set frontier \                      # default: charts / collage / workflows cover the frontier set only
     --workflow <work>/<model>_qlip_api.json \    # API graph → best_workflow.json (queue-ready)
     --ui-workflow <original UI-format workflow.json> \  # UI graph → *_ui.json (canvas-openable)
     --object-info http://127.0.0.1:8188/object_info \   # maps node.pin → the right widget slot
@@ -506,7 +820,9 @@ This replaces the older `arena compare` HTML path — the PNG is the deliverable
 
 Hand the user: the recommended `best_workflow.json` (+ `best_workflow_ui.json` to open in the
 canvas), the `workflows/` for other points (API + `_ui.json` each), `frontier.png` +
-`verdicts.png`, the `collage.png`, and `report/`.
+`verdicts.png`, the `collage.png`, and `report/` — and point them to
+`tools/READING_THE_AGENT_REPORT.md` (this folder) and the arena's `docs/READING_THE_REPORT.md`
+(every metric, in plain words) so they can read it without you.
 
 ## 7. Spectrum fit — REQUIRED before using QlipProgressive spectral backbone
 

@@ -51,13 +51,19 @@ class QlipCache:
             },
             "optional": {
                 "method": (["easycache", "taylor", "hermite"],
-                           {"default": "hermite", "tooltip":
+                           {"default": "easycache", "tooltip":
                             "How skipped steps are predicted. easycache = reuse "
-                            "last residual (cheap, robust). taylor = TaylorSeer, "
-                            "extrapolate output from history (accurate on smooth "
-                            "runs, can overshoot). hermite = HiCache, damped "
-                            "extrapolation — steadier through turning points, "
-                            "usually the best quality/speed."}),
+                            "the last residual — cheap, robust, and in our "
+                            "measurements the best quality/speed on every model "
+                            "so far (Krea-2, MiniMax-H3, Ideogram-4): the "
+                            "DEFAULT, start here. taylor = TaylorSeer, "
+                            "extrapolate output from history (can overshoot). "
+                            "hermite = HiCache, damped extrapolation: order 1 "
+                            "behaves like easycache; order >= 2 on many-step "
+                            "models tends to re-decide the composition and add "
+                            "a translucent mesh (measured on Ideogram-4: scene "
+                            "replaced on 12-14/16 prompts) — try only if "
+                            "easycache's texture tail fails the gate."}),
                 "order": ("INT", {"default": 2, "min": 1, "max": 4, "tooltip":
                           "Extrapolation order for taylor/hermite. 2 is a good "
                           "default; higher = more history tensors cached."}),

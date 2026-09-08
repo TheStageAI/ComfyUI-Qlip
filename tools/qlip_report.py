@@ -161,7 +161,7 @@ def recommend(front, tol):
 # Elo explain). See AGENTS.md §4 / §4b.
 # ---------------------------------------------------------------------------
 
-DEFAULT_GATE = ["texture=0.15", "halo", "mesh", "haze"]
+DEFAULT_GATE = ["texture=0.15", "texture_gain", "noise", "halo", "mesh", "haze"]
 
 
 def load_fpcharts(path):
@@ -587,8 +587,16 @@ def write_md(report, best, out_dir, meta):
                          f"{_fmt_lpips(e)} | "
                          f"{e['elo_delta'] if e.get('elo_delta') is not None else '—'} | "
                          f"`{(e['config'] or '')[:80]}` |")
+    if report.get("not_shown"):
+        ns = report["not_shown"]
+        lines += ["", f"*{len(ns)} other configs were measured and are dominated, no-ops "
+                  f"or gate failures; they are kept out of the charts and workflows/ to keep "
+                  f"the report readable (all data in `report.json`): "
+                  + ", ".join(ns) + ".*"]
     lines += ["", "![frontier](frontier.png)", "", "![params](params.png)", "",
-              "## Files", "- `report.json` — machine-readable full result",
+              "## Files", "- How to read this folder: `tools/READING_THE_AGENT_REPORT.md` (ComfyUI-Qlip); the arena's "
+              "pages and every metric: qlip-arena `docs/READING_THE_REPORT.md`, formulas `docs/METRICS.md`",
+              "- `report.json` — machine-readable full result",
               "- `frontier.png`, `params.png` — charts",
               "- `best_workflow.json` — the winning config as a ready-to-run "
               "ComfyUI API workflow (import & queue directly)", ""]
@@ -796,6 +804,13 @@ def main():
     ap.add_argument("--moved-max", type=float, default=0.5,
                     help="share of prompts with the layout moved above which a "
                          "config is a re-deciding (creative) point")
+    ap.add_argument("--report-set", default="frontier", choices=("frontier", "all"),
+                    help="which configs the charts, collage list and workflows/ cover: "
+                         "'frontier' (default) = the faithful Pareto front + the creative "
+                         "points + the recommended one; dominated / no-op / gate-failed "
+                         "configs are counted and listed by name only (full data stays in "
+                         "report.json). 'all' = every config on every chart (the old "
+                         "behaviour; unreadable beyond ~10 configs).")
     ap.add_argument("--rank-slack", type=float, default=1.0,
                     help="if no faster config is tied with the quality leader, "
                          "accept the fastest within this many rank units (compromise)")
@@ -851,9 +866,21 @@ def main():
         best = recommend(front, args.tol)
 
     jpath, report = write_json(entries, front, best, args.tol, args.out, meta)
-    fpath = plot_frontier(entries, front, best, args.out)
+    fpath = plot_frontier(entries if args.report_set == "all" else
+                          [e for e in entries if e.get("fp_class") != "faithful"
+                           or e in front], front, best, args.out)
     ppath = plot_params(front, args.out)
-    vpath = plot_verdicts(entries, args.out)
+    if args.report_set == "frontier":
+        keep = {e["name"] for e in front} | {e["name"] for e in report.get("creative", [])}
+        if best:
+            keep.add(best["name"])
+        shown = [e for e in entries if e["name"] in keep]
+        report["report_set"] = sorted(keep)
+        report["not_shown"] = sorted(e["name"] for e in entries if e["name"] not in keep)
+        json.dump(report, open(jpath, "w"), indent=2)
+    else:
+        shown = entries
+    vpath = plot_verdicts(shown, args.out)
     mpath = write_md(report, best, args.out, meta)
     # best_workflow.json + one workflow per frontier point (workflows/);
     # + *_ui.json siblings when a UI-format source workflow is provided.

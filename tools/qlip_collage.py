@@ -140,13 +140,34 @@ def build(store, report, out_path, rows, seed, thumb, explicit_cols):
     for cfg, _ in cols:
         pid_sets.append(set(_prompt_ids(store, cfg, seed, 999)))
     shared = set.intersection(*pid_sets) if pid_sets else set()
-    prompt_ids = sorted(shared)[:rows]
+    # skip prompts whose reference output is a blank / safety-filter card —
+    # a row of five grey placeholders shows nothing
+    def _blank(path):
+        try:
+            import numpy as np
+            from PIL import Image
+            a = np.asarray(Image.open(path).convert("L").resize((128, 128)), dtype=np.float32)
+            return float(a.std() / 255.0) < 0.035
+        except Exception:
+            return True
+    live = [pid for pid in sorted(shared)
+            if not _blank(_img_path(store, cols[0][0], pid, seed))]
+    prompt_ids = live[:rows]
     if not prompt_ids:
         raise SystemExit("no shared prompts across the chosen configs — check the store")
 
     pad, header_h, label_h = 8, 54, 22
     ncol, nrow = len(cols), len(prompt_ids)
-    W = ncol * (thumb + pad) + pad
+    # cell width follows the media aspect (portrait outputs would otherwise
+    # leave an empty strip inside the square cell)
+    cell_w = thumb
+    try:
+        im0 = _load_frame(_img_path(store, cols[0][0], prompt_ids[0], seed))
+        if im0 is not None and im0.height > 0 and im0.width < im0.height:
+            cell_w = max(64, int(round(thumb * im0.width / im0.height)))
+    except Exception:
+        pass
+    W = ncol * (cell_w + pad) + pad
     H = header_h + nrow * (thumb + pad) + pad
     canvas = Image.new("RGB", (W, H), "#ffffff")
     draw = ImageDraw.Draw(canvas)
@@ -157,12 +178,12 @@ def build(store, report, out_path, rows, seed, thumb, explicit_cols):
         font = fontb = ImageFont.load_default()
 
     for ci, (cfg, label) in enumerate(cols):
-        x = pad + ci * (thumb + pad)
+        x = pad + ci * (cell_w + pad)
         is_best = (cfg == best_name)
         head = ("★ BEST\n" + label) if is_best else label
         # header background box for best
         if is_best:
-            draw.rectangle([x - 2, 0, x + thumb + 2, header_h - 2],
+            draw.rectangle([x - 2, 0, x + cell_w + 2, header_h - 2],
                            fill="#fff3cd", outline="#f9ab00", width=2)
         draw.multiline_text((x + 2, 3), head, fill="#202124",
                             font=(fontb if is_best else font), spacing=1)
@@ -177,11 +198,11 @@ def build(store, report, out_path, rows, seed, thumb, explicit_cols):
                     im.thumbnail((thumb, thumb))
                     canvas.paste(im, (x, y))
                 except Exception:
-                    draw.rectangle([x, y, x + thumb, y + thumb], outline="#ccc")
+                    draw.rectangle([x, y, x + cell_w, y + thumb], outline="#ccc")
             else:
-                draw.rectangle([x, y, x + thumb, y + thumb], outline="#ccc")
+                draw.rectangle([x, y, x + cell_w, y + thumb], outline="#ccc")
             if is_best:
-                draw.rectangle([x - 1, y - 1, x + thumb + 1, y + thumb + 1],
+                draw.rectangle([x - 1, y - 1, x + cell_w + 1, y + thumb + 1],
                                outline="#f9ab00", width=3)
     canvas.save(out_path)
     return out_path, [c[0] for c in cols], prompt_ids
