@@ -1,7 +1,8 @@
-import sys
 import logging
+import sys
 from pathlib import Path
 from typing import Optional
+
 import torch
 
 logger = logging.getLogger("qlip_nodes")
@@ -10,6 +11,7 @@ logger = logging.getLogger("qlip_nodes")
 # ---------------------------------------------------------------------------
 # Engine discovery
 # ---------------------------------------------------------------------------
+
 
 def find_engines_dir(engines_path: str = "", hf_repo: str = "") -> Path:
     """
@@ -78,13 +80,22 @@ def download_engines_from_hf(hf_repo: str, local_dir: Optional[str] = None) -> P
     else:
         repo_id = hf_repo
         subpath = None
-        allow_patterns = ["*.engine", "*.qlip", "*.bin", "*.json"]
+        allow_patterns = [
+            "*.engine",
+            "*.qlip",
+            "*.pt2",
+            "*.bin",
+            "*.json",
+            "loom_*.safetensors",
+        ]
 
-    path = Path(snapshot_download(
-        repo_id,
-        local_dir=local_dir,
-        allow_patterns=allow_patterns,
-    ))
+    path = Path(
+        snapshot_download(
+            repo_id,
+            local_dir=local_dir,
+            allow_patterns=allow_patterns,
+        )
+    )
 
     # If subpath was specified, return it directly
     if subpath:
@@ -98,23 +109,28 @@ def download_engines_from_hf(hf_repo: str, local_dir: Optional[str] = None) -> P
             return engine_file.parent
         for engine_file in path.rglob("*.engine"):
             return engine_file.parent
+        for engine_file in path.rglob("*.pt2"):
+            return engine_file.parent
 
     return path
 
 
+ENGINE_GLOBS = ("*.engine", "*.qlip", "*.pt2")  # TRT, encrypted TRT, AOTInductor
+
+
 def has_engine_files(engines_dir: Path) -> bool:
-    """Check if directory contains .engine or .qlip files (recursively)."""
+    """Check if directory contains .engine/.qlip/.pt2 files (recursively)."""
     if not engines_dir.is_dir():
         return False
-    for ext in ("*.engine", "*.qlip"):
+    for ext in ENGINE_GLOBS:
         if list(engines_dir.rglob(ext)):
             return True
     return False
 
 
 def _has_engine_files_flat(engines_dir: Path) -> bool:
-    """Check if directory contains .engine or .qlip files (non-recursive)."""
-    for ext in ("*.engine", "*.qlip"):
+    """Check if directory contains .engine/.qlip/.pt2 files (non-recursive)."""
+    for ext in ENGINE_GLOBS:
         if list(engines_dir.glob(ext)):
             return True
     return False
@@ -123,6 +139,7 @@ def _has_engine_files_flat(engines_dir: Path) -> bool:
 # ---------------------------------------------------------------------------
 # Path helpers
 # ---------------------------------------------------------------------------
+
 
 def _add_qlip_to_path():
     """Ensure qlip package is importable."""
@@ -158,13 +175,26 @@ _KREA2_LAYER_RENAME = {
 }
 
 
+# wrapper prefixes LoRA trainers put in front of the diffusers names
+# (Comfy-Org's official Krea-2 LoRAs: "transformer.transformer_blocks.0...")
+_KREA2_KEY_PREFIXES = ("transformer.", "diffusion_model.", "model.diffusion_model.")
+
+
+def _strip_krea2_prefix(key):
+    for p in _KREA2_KEY_PREFIXES:
+        if key.startswith(p) and key[len(p) :].startswith("transformer_blocks."):
+            return key[len(p) :]
+    return key
+
+
 def _is_krea2_diffusers_lora(raw_weights):
     """True if the LoRA carries diffusers-style Krea-2 block keys
-    (``transformer_blocks.<n>.attn.to_q``-shaped)."""
+    (``[transformer.]transformer_blocks.<n>.attn.to_q``-shaped)."""
     for k in raw_weights:
+        k = _strip_krea2_prefix(k)
         if k.startswith("transformer_blocks.") and (
-                ".attn.to_q." in k or ".attn.to_out.0." in k
-                or ".ff.down." in k):
+            ".attn.to_q." in k or ".attn.to_out.0." in k or ".ff.down." in k
+        ):
             return True
     return False
 
@@ -175,19 +205,22 @@ def _remap_krea2_lora_keys(raw_weights):
     (txtfusion, alphas we can't place) is passed through unchanged."""
     out = {}
     for key, val in raw_weights.items():
+        key = _strip_krea2_prefix(key)
         if not key.startswith("transformer_blocks."):
             out[key] = val
             continue
-        nk = "blocks." + key[len("transformer_blocks."):]
+        nk = "blocks." + key[len("transformer_blocks.") :]
         for src, dst in _KREA2_LAYER_RENAME.items():
             if "." + src + "." in "." + nk:
                 nk = nk.replace(src + ".", dst + ".", 1)
                 break
-        nk = nk.replace(".lora_A.", ".lora_down.").replace(
-            ".lora_B.", ".lora_up.")
+        nk = nk.replace(".lora_A.", ".lora_down.").replace(".lora_B.", ".lora_up.")
         out[nk] = val
-    logger.info("Detected Krea-2 diffusers LoRA — remapped %d block keys to "
-                "model naming (blocks/attn.wq/lora_down)", len(raw_weights))
+    logger.info(
+        "Detected Krea-2 diffusers LoRA — remapped %d block keys to "
+        "model naming (blocks/attn.wq/lora_down)",
+        len(raw_weights),
+    )
     return out
 
 
@@ -219,6 +252,7 @@ def convert_lora_format(raw_weights):
             from diffusers.loaders.lora_conversion_utils import (
                 _convert_kohya_flux_lora_to_diffusers,
             )
+
             return _convert_kohya_flux_lora_to_diffusers(raw_weights)
         except ImportError:
             logger.warning("diffusers conversion utils not available")
@@ -232,6 +266,7 @@ def convert_lora_format(raw_weights):
             from diffusers.loaders.lora_conversion_utils import (
                 _convert_xlabs_flux_lora_to_diffusers,
             )
+
             return _convert_xlabs_flux_lora_to_diffusers(raw_weights)
         except ImportError:
             logger.warning("diffusers conversion utils not available")
@@ -245,6 +280,7 @@ def convert_lora_format(raw_weights):
             from diffusers.loaders.lora_conversion_utils import (
                 _convert_bfl_flux_control_lora_to_diffusers,
             )
+
             return _convert_bfl_flux_control_lora_to_diffusers(raw_weights)
         except ImportError:
             logger.warning("diffusers conversion utils not available")
@@ -258,7 +294,10 @@ def convert_lora_format(raw_weights):
 # LoRA config helpers
 # ---------------------------------------------------------------------------
 
-def _infer_lora_config_from_model(dm, block_attr="double_blocks", prefix="double_blocks"):
+
+def _infer_lora_config_from_model(
+    dm, block_attr="double_blocks", prefix="double_blocks"
+):
     """Build LoRAConfig from nn.Linear modules found in block[0].
 
     Used when engines were compiled with LoRA but no LoRA file is provided
@@ -317,8 +356,7 @@ def _discover_block_groups(dm):
     for name, module in dm.named_children():
         if isinstance(module, torch.nn.ModuleList) and len(module) > 0:
             block = module[0]
-            has_linear = any(isinstance(m, torch.nn.Linear)
-                             for m in block.modules())
+            has_linear = any(isinstance(m, torch.nn.Linear) for m in block.modules())
             if has_linear:
                 groups.append((name, name))
     return groups
@@ -362,17 +400,20 @@ def load_lora_config_json(path):
     configs = []
     for entry in data["configs"]:
         layers = [
-            LayerConfig(l["name"], l["out_features"], l["in_features"])
-            for l in entry["layers"]
+            LayerConfig(layer["name"], layer["out_features"], layer["in_features"])
+            for layer in entry["layers"]
         ]
-        configs.append(LoRAConfig(
-            name=entry["name"],
-            layers=layers,
-            block_prefix=entry["block_prefix"],
-            num_blocks=entry["num_blocks"],
-            max_features=entry["max_features"],
-        ))
+        configs.append(
+            LoRAConfig(
+                name=entry["name"],
+                layers=layers,
+                block_prefix=entry["block_prefix"],
+                num_blocks=entry["num_blocks"],
+                max_features=entry["max_features"],
+            )
+        )
     return configs
+
 
 # ---------------------------------------------------------------------------
 # FLUX SPECIFIC — modulation flattening
@@ -391,8 +432,16 @@ def patch_forward_orig_for_modulation(transformer):
     orig_forward_orig = transformer.forward_orig
 
     def patched_forward_orig(
-        img, img_ids, txt, txt_ids, timesteps, y,
-        guidance=None, control=None, transformer_options={}, attn_mask=None,
+        img,
+        img_ids,
+        txt,
+        txt_ids,
+        timesteps,
+        y,
+        guidance=None,
+        control=None,
+        transformer_options={},
+        attn_mask=None,
         **kwargs,
     ):
         import comfy.ldm.flux.layers as flux_layers
@@ -403,15 +452,23 @@ def patch_forward_orig_for_modulation(transformer):
             raise ValueError("Input img and txt tensors must have 3 dimensions.")
 
         img = transformer.img_in(img)
-        vec = transformer.time_in(flux_layers.timestep_embedding(timesteps, 256).to(img.dtype))
+        vec = transformer.time_in(
+            flux_layers.timestep_embedding(timesteps, 256).to(img.dtype)
+        )
         if transformer.params.guidance_embed:
             if guidance is not None:
-                vec = vec + transformer.guidance_in(flux_layers.timestep_embedding(guidance, 256).to(img.dtype))
+                vec = vec + transformer.guidance_in(
+                    flux_layers.timestep_embedding(guidance, 256).to(img.dtype)
+                )
 
         if transformer.vector_in is not None:
             if y is None:
-                y = torch.zeros((img.shape[0], transformer.params.vec_in_dim), device=img.device, dtype=img.dtype)
-            vec = vec + transformer.vector_in(y[:, :transformer.params.vec_in_dim])
+                y = torch.zeros(
+                    (img.shape[0], transformer.params.vec_in_dim),
+                    device=img.device,
+                    dtype=img.dtype,
+                )
+            vec = vec + transformer.vector_in(y[:, : transformer.params.vec_in_dim])
 
         if transformer.txt_norm is not None:
             txt = transformer.txt_norm(txt)
@@ -424,16 +481,28 @@ def patch_forward_orig_for_modulation(transformer):
         txt_mod = transformer.double_stream_modulation_txt(vec_orig)
         img_mod1, img_mod2 = img_mod
         txt_mod1, txt_mod2 = txt_mod
-        stacked_vec = torch.stack([
-            img_mod1.shift, img_mod1.scale, img_mod1.gate,
-            img_mod2.shift, img_mod2.scale, img_mod2.gate,
-            txt_mod1.shift, txt_mod1.scale, txt_mod1.gate,
-            txt_mod2.shift, txt_mod2.scale, txt_mod2.gate,
-        ])
+        stacked_vec = torch.stack(
+            [
+                img_mod1.shift,
+                img_mod1.scale,
+                img_mod1.gate,
+                img_mod2.shift,
+                img_mod2.scale,
+                img_mod2.gate,
+                txt_mod1.shift,
+                txt_mod1.scale,
+                txt_mod1.gate,
+                txt_mod2.shift,
+                txt_mod2.scale,
+                txt_mod2.gate,
+            ]
+        )
 
         if "post_input" in patches:
             for p in patches["post_input"]:
-                out = p({"img": img, "txt": txt, "img_ids": img_ids, "txt_ids": txt_ids})
+                out = p(
+                    {"img": img, "txt": txt, "img_ids": img_ids, "txt_ids": txt_ids}
+                )
                 img = out["img"]
                 txt = out["txt"]
                 img_ids = out["img_ids"]
@@ -451,39 +520,48 @@ def patch_forward_orig_for_modulation(transformer):
         for i, block in enumerate(transformer.double_blocks):
             transformer_options["block_index"] = i
             if ("double_block", i) in blocks_replace:
+
                 def block_wrap(args):
                     out = {}
-                    out["img"], out["txt"] = block(img=args["img"],
-                                                   txt=args["txt"],
-                                                   vec=args["vec"],
-                                                   pe=args["pe"],
-                                                   attn_mask=args.get("attn_mask"),
-                                                   transformer_options=args.get("transformer_options"))
+                    out["img"], out["txt"] = block(
+                        img=args["img"],
+                        txt=args["txt"],
+                        vec=args["vec"],
+                        pe=args["pe"],
+                        attn_mask=args.get("attn_mask"),
+                        transformer_options=args.get("transformer_options"),
+                    )
                     return out
 
-                out = blocks_replace[("double_block", i)]({"img": img,
-                                                           "txt": txt,
-                                                           "vec": stacked_vec,
-                                                           "pe": pe,
-                                                           "attn_mask": attn_mask,
-                                                           "transformer_options": transformer_options},
-                                                          {"original_block": block_wrap})
+                out = blocks_replace[("double_block", i)](
+                    {
+                        "img": img,
+                        "txt": txt,
+                        "vec": stacked_vec,
+                        "pe": pe,
+                        "attn_mask": attn_mask,
+                        "transformer_options": transformer_options,
+                    },
+                    {"original_block": block_wrap},
+                )
                 txt = out["txt"]
                 img = out["img"]
             else:
-                img, txt = block(img=img,
-                                 txt=txt,
-                                 vec=stacked_vec,
-                                 pe=pe,
-                                 attn_mask=attn_mask,
-                                 transformer_options=transformer_options)
+                img, txt = block(
+                    img=img,
+                    txt=txt,
+                    vec=stacked_vec,
+                    pe=pe,
+                    attn_mask=attn_mask,
+                    transformer_options=transformer_options,
+                )
 
             if control is not None:
                 control_i = control.get("input")
                 if i < len(control_i):
                     add = control_i[i]
                     if add is not None:
-                        img[:, :add.shape[1]] += add
+                        img[:, : add.shape[1]] += add
 
         if img.dtype == torch.float16:
             img = torch.nan_to_num(img, nan=0.0, posinf=65504, neginf=-65504)
@@ -492,31 +570,46 @@ def patch_forward_orig_for_modulation(transformer):
 
         # Single blocks: stack ModulationOut into tensor (3, batch, 1, hidden)
         single_vec_full, _ = transformer.single_stream_modulation(vec_orig)
-        stacked_single_vec = torch.stack([single_vec_full.shift, single_vec_full.scale, single_vec_full.gate])
+        stacked_single_vec = torch.stack(
+            [single_vec_full.shift, single_vec_full.scale, single_vec_full.gate]
+        )
 
         transformer_options["total_blocks"] = len(transformer.single_blocks)
         transformer_options["block_type"] = "single"
         for i, block in enumerate(transformer.single_blocks):
             transformer_options["block_index"] = i
             if ("single_block", i) in blocks_replace:
+
                 def block_wrap(args):
                     out = {}
-                    out["img"] = block(args["img"],
-                                       vec=args["vec"],
-                                       pe=args["pe"],
-                                       attn_mask=args.get("attn_mask"),
-                                       transformer_options=args.get("transformer_options"))
+                    out["img"] = block(
+                        args["img"],
+                        vec=args["vec"],
+                        pe=args["pe"],
+                        attn_mask=args.get("attn_mask"),
+                        transformer_options=args.get("transformer_options"),
+                    )
                     return out
 
-                out = blocks_replace[("single_block", i)]({"img": img,
-                                                           "vec": stacked_single_vec,
-                                                           "pe": pe,
-                                                           "attn_mask": attn_mask,
-                                                           "transformer_options": transformer_options},
-                                                          {"original_block": block_wrap})
+                out = blocks_replace[("single_block", i)](
+                    {
+                        "img": img,
+                        "vec": stacked_single_vec,
+                        "pe": pe,
+                        "attn_mask": attn_mask,
+                        "transformer_options": transformer_options,
+                    },
+                    {"original_block": block_wrap},
+                )
                 img = out["img"]
             else:
-                img = block(img, vec=stacked_single_vec, pe=pe, attn_mask=attn_mask, transformer_options=transformer_options)
+                img = block(
+                    img,
+                    vec=stacked_single_vec,
+                    pe=pe,
+                    attn_mask=attn_mask,
+                    transformer_options=transformer_options,
+                )
 
             if control is not None:
                 control_o = control.get("output")
@@ -589,7 +682,8 @@ def patch_compressed_timestep(transformer):
 
         # Expand any CompressedTimestep in extra values (e.g. prompt_timestep)
         extra_raw = tuple(
-            expand_if_compressed(x) if not isinstance(x, (list, tuple))
+            expand_if_compressed(x)
+            if not isinstance(x, (list, tuple))
             else [expand_if_compressed(i) for i in x]
             for x in extra
         )
@@ -612,9 +706,16 @@ def patch_process_transformer_blocks(transformer):
     """
     import types
 
-    def patched_process_transformer_blocks(self_tr, x, context, attention_mask,
-                                           timestep, pe, transformer_options={},
-                                           **kwargs):
+    def patched_process_transformer_blocks(
+        self_tr,
+        x,
+        context,
+        attention_mask,
+        timestep,
+        pe,
+        transformer_options={},
+        **kwargs,
+    ):
         (v_pe_tuple, v_cross_tuple) = pe[0]
         (a_pe_tuple, a_cross_tuple) = pe[1]
 
@@ -653,6 +754,7 @@ def patch_process_transformer_blocks(transformer):
 
         for i, block in enumerate(self_tr.transformer_blocks):
             if ("double_block", i) in blocks_replace:
+
                 def block_wrap(args):
                     out = {}
                     out["img"] = block(
@@ -666,8 +768,12 @@ def patch_process_transformer_blocks(transformer):
                         a_pe=args["a_pe"],
                         v_cross_pe=args["v_cross_pe"],
                         a_cross_pe=args["a_cross_pe"],
-                        v_cross_scale_shift_timestep=args["v_cross_scale_shift_timestep"],
-                        a_cross_scale_shift_timestep=args["a_cross_scale_shift_timestep"],
+                        v_cross_scale_shift_timestep=args[
+                            "v_cross_scale_shift_timestep"
+                        ],
+                        a_cross_scale_shift_timestep=args[
+                            "a_cross_scale_shift_timestep"
+                        ],
                         v_cross_gate_timestep=args["v_cross_gate_timestep"],
                         a_cross_gate_timestep=args["a_cross_gate_timestep"],
                         transformer_options=args["transformer_options"],
@@ -733,9 +839,11 @@ def is_zimage_lumina_model(dm) -> bool:
     if cls_name in ("NextDiT", "ZImageNextDiT", "Lumina2"):
         return True
     # Heuristic: NextDiT has pad_tokens_multiple, x_pad_token, cap_pad_token
-    if (hasattr(dm, "pad_tokens_multiple")
-            and hasattr(dm, "cap_pad_token")
-            and hasattr(dm, "x_pad_token")):
+    if (
+        hasattr(dm, "pad_tokens_multiple")
+        and hasattr(dm, "cap_pad_token")
+        and hasattr(dm, "x_pad_token")
+    ):
         return True
     return False
 
@@ -756,8 +864,10 @@ def patch_zimage_fixed_cap_len(transformer, fixed_cap_len: int = 64):
     Must be called AFTER engine loading.
     """
     if not hasattr(transformer, "embed_cap"):
-        print(f"[qlip] Z-Image patch skipped: no embed_cap on "
-              f"{type(transformer).__name__}")
+        print(
+            f"[qlip] Z-Image patch skipped: no embed_cap on "
+            f"{type(transformer).__name__}"
+        )
         return
 
     orig_embed_cap = transformer.embed_cap
@@ -765,8 +875,11 @@ def patch_zimage_fixed_cap_len(transformer, fixed_cap_len: int = 64):
     def patched_embed_cap(cap_feats=None, offset=0, bsz=1, device=None, dtype=None):
         # Run the original to get the standard padded cap_feats
         embeds, freqs_cis, cap_feats_len = orig_embed_cap(
-            cap_feats=cap_feats, offset=offset,
-            bsz=bsz, device=device, dtype=dtype,
+            cap_feats=cap_feats,
+            offset=offset,
+            bsz=bsz,
+            device=device,
+            dtype=dtype,
         )
 
         # embeds is a tuple; embeds[0] is the cap_feats tensor (B, L, D)
@@ -779,9 +892,15 @@ def patch_zimage_fixed_cap_len(transformer, fixed_cap_len: int = 64):
         if L < fixed_cap_len:
             # Pad with cap_pad_token to reach fixed length
             pad_extra = fixed_cap_len - L
-            pad_tok = transformer.cap_pad_token.to(
-                device=cf.device, dtype=cf.dtype, copy=True,
-            ).unsqueeze(0).repeat(cf.shape[0], pad_extra, 1)
+            pad_tok = (
+                transformer.cap_pad_token.to(
+                    device=cf.device,
+                    dtype=cf.dtype,
+                    copy=True,
+                )
+                .unsqueeze(0)
+                .repeat(cf.shape[0], pad_extra, 1)
+            )
             cf_new = torch.cat((cf, pad_tok), dim=1)
         else:
             # Truncate (rare — would need a very long prompt)
@@ -791,13 +910,16 @@ def patch_zimage_fixed_cap_len(transformer, fixed_cap_len: int = 64):
         # freqs_cis from embed_cap is a tuple (from rope_embedder).
         # We must preserve its type — embed_all does `freqs_cis += (None,)`.
         cap_pos_ids = torch.zeros(
-            cf_new.shape[0], cf_new.shape[1], 3,
-            dtype=torch.float32, device=cf_new.device,
+            cf_new.shape[0],
+            cf_new.shape[1],
+            3,
+            dtype=torch.float32,
+            device=cf_new.device,
         )
         cap_pos_ids[:, :, 0] = (
-            torch.arange(cf_new.shape[1], dtype=torch.float32,
-                         device=cf_new.device)
-            + 1.0 + offset
+            torch.arange(cf_new.shape[1], dtype=torch.float32, device=cf_new.device)
+            + 1.0
+            + offset
         )
 
         if hasattr(transformer, "rope_embedder"):
@@ -811,23 +933,52 @@ def patch_zimage_fixed_cap_len(transformer, fixed_cap_len: int = 64):
         return embeds_new, freqs_cis, cap_feats_len
 
     transformer.embed_cap = patched_embed_cap
-    print(f"[qlip] Patched embed_cap: cap_feats forced to "
-          f"{fixed_cap_len} tokens")
+    print(f"[qlip] Patched embed_cap: cap_feats forced to " f"{fixed_cap_len} tokens")
 
 
-def _rebind_optimized_attention(orig_fn, new_fn):
+def _rebind_optimized_attention(orig_fn, new_fn, extra_symbols=None):
     """Set `optimized_attention = new_fn` in the source module and in every
-    loaded module that imported the original by value. Returns the list of
-    modules patched so the caller's uninstall can restore them."""
+    loaded module that imported the original by value. Returns a list of
+    (module, symbol, old_fn) tuples so the caller's uninstall can restore them.
+
+    Some model families (e.g. Krea-2 in comfy.ldm.krea2.model) do NOT use the
+    plain ``optimized_attention`` — they import ``optimized_attention_masked``
+    by name. Pass those names in ``extra_symbols`` so the sparse router also
+    intercepts them; without this the sparse kernel never engages on such
+    models (all-dense). ``extra_symbols`` entries are matched by NAME regardless
+    of the current bound value, since the masked variant is a different object
+    than ``orig_fn``.
+    """
     import sys
+
     patched = []
+    extra = set(extra_symbols or [])
     for name, mod in list(sys.modules.items()):
         if mod is None:
             continue
-        if getattr(mod, "optimized_attention", None) is orig_fn:
+        # read the module __dict__, never getattr(): lazy modules
+        # (transformers, ...) resolve unknown names in __getattr__ by
+        # importing whole subpackages — e.g. transformers' perception_lm,
+        # which crashes on an older timm ("cannot import ImageNetInfo").
+        # A symbol a module imported by value is in its __dict__ anyway.
+        d = getattr(mod, "__dict__", None)
+        if not isinstance(d, dict):
+            continue
+        # the plain symbol: match by identity against orig_fn
+        if d.get("optimized_attention") is orig_fn:
             try:
+                old = mod.optimized_attention
                 mod.optimized_attention = new_fn
-                patched.append(mod)
+                patched.append((mod, "optimized_attention", old))
             except Exception:
                 pass
+        # extra symbols (e.g. optimized_attention_masked): match by name
+        for sym in extra:
+            cur = d.get(sym)
+            if callable(cur) and cur is not new_fn:
+                try:
+                    mod.__dict__[sym] = new_fn
+                    patched.append((mod, sym, cur))
+                except Exception:
+                    pass
     return patched

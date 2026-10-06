@@ -1,12 +1,12 @@
-import time
 import threading
+import time
 
 import torch
-
 
 # ---------------------------------------------------------------------------
 # ANY type passthrough (SmartType pattern from ComfyUI)
 # ---------------------------------------------------------------------------
+
 
 class _AnyType(str):
     """String subclass that matches any ComfyUI type via __ne__ override."""
@@ -25,6 +25,7 @@ ANY_TYPE = _AnyType("*")
 # ---------------------------------------------------------------------------
 # Timer storage (class-level singleton, thread-safe)
 # ---------------------------------------------------------------------------
+
 
 def _gpu_used_bytes() -> int | None:
     """GPU memory currently in use ON THE DEVICE (driver view), in bytes.
@@ -102,12 +103,12 @@ class _GPUPoller:
 
 class _TimerStore:
     _lock = threading.Lock()
-    _timers: dict[str, float] = {}          # name -> start perf_counter
+    _timers: dict[str, float] = {}  # name -> start perf_counter
     _pollers: dict[str, "_GPUPoller"] = {}  # name -> running GPU poller
     # ordered (name, elapsed_s, peak_used_bytes|None, total_bytes|None)
     _results: list[tuple] = []
-    _collected = False                       # True after report() reads results
-    _cold_starts: dict[str, float] = {}     # name -> first elapsed (persistent)
+    _collected = False  # True after report() reads results
+    _cold_starts: dict[str, float] = {}  # name -> first elapsed (persistent)
 
     @classmethod
     def start(cls, name: str, measure_gpu: bool = True):
@@ -162,10 +163,10 @@ class _TimerStore:
             return cls._cold_starts.get(name)
 
 
-
 # ---------------------------------------------------------------------------
 # QlipTimerStart
 # ---------------------------------------------------------------------------
+
 
 class QlipTimerStart:
     """Record a start timestamp. Place before the node(s) you want to measure."""
@@ -174,24 +175,36 @@ class QlipTimerStart:
     def INPUT_TYPES(s):
         return {
             "required": {
-                "passthrough": (ANY_TYPE, {
-                    "tooltip": "Data to pass through (any type)",
-                }),
-                "timer_name": ("STRING", {
-                    "default": "timer_1",
-                    "tooltip": "Name for this timer (must match QlipTimerStop)",
-                }),
+                "passthrough": (
+                    ANY_TYPE,
+                    {
+                        "tooltip": "Data to pass through (any type)",
+                    },
+                ),
+                "timer_name": (
+                    "STRING",
+                    {
+                        "default": "timer_1",
+                        "tooltip": "Name for this timer (must match QlipTimerStop)",
+                    },
+                ),
             },
             "optional": {
-                "cuda_sync": ("BOOLEAN", {
-                    "default": True,
-                    "tooltip": "Call torch.cuda.synchronize() for accurate GPU timing",
-                }),
-                "measure_gpu": ("BOOLEAN", {
-                    "default": True,
-                    "tooltip": "Also measure GPU memory used between Start and Stop "
-                               "(driver view — includes TensorRT engine memory)",
-                }),
+                "cuda_sync": (
+                    "BOOLEAN",
+                    {
+                        "default": True,
+                        "tooltip": "Call torch.cuda.synchronize() for accurate GPU timing",
+                    },
+                ),
+                "measure_gpu": (
+                    "BOOLEAN",
+                    {
+                        "default": True,
+                        "tooltip": "Also measure GPU memory used between Start and Stop "
+                        "(driver view — includes TensorRT engine memory)",
+                    },
+                ),
             },
         }
 
@@ -208,8 +221,9 @@ class QlipTimerStart:
     def VALIDATE_INPUTS(cls, **kwargs):
         return True
 
-    def start_timer(self, passthrough, timer_name="timer_1", cuda_sync=True,
-                    measure_gpu=True):
+    def start_timer(
+        self, passthrough, timer_name="timer_1", cuda_sync=True, measure_gpu=True
+    ):
         if cuda_sync and torch.cuda.is_available():
             torch.cuda.synchronize()
         _TimerStore.start(timer_name, measure_gpu=measure_gpu)
@@ -217,8 +231,10 @@ class QlipTimerStart:
         if measure_gpu:
             used = _gpu_used_bytes()
             if used is not None:
-                gpu_note = (f" (GPU in use {used / 1024**3:.2f} GiB; "
-                            f"polling peak until Stop)")
+                gpu_note = (
+                    f" (GPU in use {used / 1024**3:.2f} GiB; "
+                    f"polling peak until Stop)"
+                )
         print(f"[qlip timer] '{timer_name}' started{gpu_note}")
         return (passthrough,)
 
@@ -227,6 +243,7 @@ class QlipTimerStart:
 # QlipTimerStop
 # ---------------------------------------------------------------------------
 
+
 class QlipTimerStop:
     """Record elapsed time and display it. Place after the measured node(s)."""
 
@@ -234,26 +251,38 @@ class QlipTimerStop:
     def INPUT_TYPES(s):
         return {
             "required": {
-                "passthrough": (ANY_TYPE, {
-                    "tooltip": "Data to pass through (any type)",
-                }),
-                "timer_name": ("STRING", {
-                    "default": "timer_1",
-                    "tooltip": "Name for this timer (must match QlipTimerStart)",
-                }),
+                "passthrough": (
+                    ANY_TYPE,
+                    {
+                        "tooltip": "Data to pass through (any type)",
+                    },
+                ),
+                "timer_name": (
+                    "STRING",
+                    {
+                        "default": "timer_1",
+                        "tooltip": "Name for this timer (must match QlipTimerStart)",
+                    },
+                ),
             },
             "optional": {
-                "cuda_sync": ("BOOLEAN", {
-                    "default": True,
-                    "tooltip": "Call torch.cuda.synchronize() for accurate GPU timing",
-                }),
-                "measure_gpu": ("BOOLEAN", {
-                    "default": True,
-                    "tooltip": "Also report PEAK total GPU memory in use between "
-                               "Start and Stop (driver view — includes TensorRT "
-                               "engine memory; sampled by a background poller so "
-                               "it catches the mid-sampling peak)",
-                }),
+                "cuda_sync": (
+                    "BOOLEAN",
+                    {
+                        "default": True,
+                        "tooltip": "Call torch.cuda.synchronize() for accurate GPU timing",
+                    },
+                ),
+                "measure_gpu": (
+                    "BOOLEAN",
+                    {
+                        "default": True,
+                        "tooltip": "Also report PEAK total GPU memory in use between "
+                        "Start and Stop (driver view — includes TensorRT "
+                        "engine memory; sampled by a background poller so "
+                        "it catches the mid-sampling peak)",
+                    },
+                ),
             },
         }
 
@@ -271,8 +300,9 @@ class QlipTimerStop:
     def VALIDATE_INPUTS(cls, **kwargs):
         return True
 
-    def stop_timer(self, passthrough, timer_name="timer_1", cuda_sync=True,
-                   measure_gpu=True):
+    def stop_timer(
+        self, passthrough, timer_name="timer_1", cuda_sync=True, measure_gpu=True
+    ):
         if cuda_sync and torch.cuda.is_available():
             torch.cuda.synchronize()
         res = _TimerStore.stop(timer_name, measure_gpu=measure_gpu)
@@ -281,8 +311,10 @@ class QlipTimerStop:
             ms = elapsed * 1000
             text = f"{timer_name}: {elapsed:.3f} s ({ms:.1f} ms)"
             if peak_used is not None and total is not None:
-                text += (f" | GPU peak {peak_used / 1024**3:.2f} / "
-                         f"{total / 1024**3:.2f} GiB")
+                text += (
+                    f" | GPU peak {peak_used / 1024**3:.2f} / "
+                    f"{total / 1024**3:.2f} GiB"
+                )
         else:
             text = f"{timer_name}: no matching QlipTimerStart"
 
@@ -298,6 +330,7 @@ class QlipTimerStop:
 # QlipTimerReport
 # ---------------------------------------------------------------------------
 
+
 class QlipTimerReport:
     """Display a summary table of all timer measurements."""
 
@@ -306,13 +339,19 @@ class QlipTimerReport:
         return {
             "required": {},
             "optional": {
-                "trigger": (ANY_TYPE, {
-                    "tooltip": "Connect any output to ensure execution order",
-                }),
-                "track_cold_start": ("BOOLEAN", {
-                    "default": False,
-                    "tooltip": "Show cold start (first run) comparison in report",
-                }),
+                "trigger": (
+                    ANY_TYPE,
+                    {
+                        "tooltip": "Connect any output to ensure execution order",
+                    },
+                ),
+                "track_cold_start": (
+                    "BOOLEAN",
+                    {
+                        "default": False,
+                        "tooltip": "Show cold start (first run) comparison in report",
+                    },
+                ),
             },
         }
 
@@ -353,8 +392,10 @@ class QlipTimerReport:
 
             gpu_str = ""
             if peak_used is not None and gpu_total is not None:
-                gpu_str = (f"  | GPU peak {peak_used / 1024**3:.2f} / "
-                           f"{gpu_total / 1024**3:.2f} GiB")
+                gpu_str = (
+                    f"  | GPU peak {peak_used / 1024**3:.2f} / "
+                    f"{gpu_total / 1024**3:.2f} GiB"
+                )
 
             if track_cold_start:
                 cold = _TimerStore.get_cold_start(name)
@@ -362,7 +403,9 @@ class QlipTimerReport:
                     cold_total += cold
                     has_cold = True
                     if abs(cold - elapsed) < 1e-6:
-                        lines.append(f"  {name}: {elapsed:.3f} s ({ms:.1f} ms)  (cold start){gpu_str}")
+                        lines.append(
+                            f"  {name}: {elapsed:.3f} s ({ms:.1f} ms)  (cold start){gpu_str}"
+                        )
                     else:
                         delta_pct = ((elapsed - cold) / cold) * 100
                         lines.append(
@@ -374,7 +417,7 @@ class QlipTimerReport:
             else:
                 lines.append(f"  {name}: {elapsed:.3f} s ({ms:.1f} ms){gpu_str}")
 
-        lines.append(f"  --------")
+        lines.append("  --------")
         total_ms = total * 1000
         if track_cold_start and has_cold:
             if abs(cold_total - total) < 1e-6:

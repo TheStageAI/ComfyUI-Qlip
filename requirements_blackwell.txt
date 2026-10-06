@@ -1,30 +1,19 @@
---extra-index-url https://thestage.jfrog.io/artifactory/api/pypi/pypi-thestage-ai-production/simple
+# ComfyUI-Qlip — Blackwell RTX 5090 (sm_120a) / B200 (sm_100), CUDA 13 device stack.
+#
+# Installed by install.py AFTER torch 2.12.0+cu130 (step 1) and ComfyUI's own
+# requirements under a constraints file (step 2). This file does NOT install qlip
+# (see below) or torch — torch is installed first from the cu130 index and held
+# pinned by the constraints file.
+--extra-index-url https://thestage.jfrog.io/artifactory/api/pypi/pypi-thestage-ai-staging/simple
 
+# qlip.core is installed SEPARATELY with --no-deps by install.py, AFTER this file:
+#   pip install "qlip.core[blackwell]" --no-deps --extra-index-url <staging>
+# because the wheel's metadata would otherwise pull a cu12 torch over the cu130
+# build and break the FP4 engines. (--no-deps installs code only.)
 
-# Qlip core — installed SEPARATELY, NOT from this file. The released
-# qlip.core[blackwell] wheel declares numpy<2 and pins torch to a cu12 build,
-# so `pip install qlip.core[blackwell]` inside this file would either fail to
-# resolve (numpy conflict) or DOWNGRADE torch 2.12+cu130 -> 2.9.1+cu12 and break
-# the Blackwell FP4 engines. Install it with --no-deps AFTER this file, so it
-# keeps the torch/numpy already installed here:
-#   pip install "qlip.core[blackwell]" --no-deps \
-#     --extra-index-url https://thestage.jfrog.io/artifactory/api/pypi/pypi-thestage-ai-production/simple
-# (The wheel's numpy<2 metadata is over-strict — it imports and runs fine on the
-# numpy 2.x pinned below. --no-deps is what makes this work.)
-
-# PyTorch (cu130 build — only on PyTorch's index). Install these FIRST, before
-# this file, from the cu130 index (NOTE: torchaudio 2.12.0 is NOT on the cu130
-# index — omit it; ComfyUI runs fine without it):
-#   pip install --pre torch==2.12.0 torchvision==0.27.0 \
-#       --index-url https://download.pytorch.org/whl/cu130
-# Listed here as comments only — mixing indexes in one file is fragile.
-# torch==2.12.0+cu130
-# torchvision==0.27.0
-
-# TensorRT 10.15 (Blackwell FP4 fusion needs >= 10.13). The cu12 wheels are
-# verified to work on the CUDA 13 stack (the driver is backwards-compatible);
-# the equivalent tensorrt-cu13 wheels of the same version also work — engines
-# are tied to the TRT version (10.15.1.29), not the cu12/cu13 wheel variant.
+# TensorRT 10.15 (Blackwell FP4 fusion needs >= 10.13). cu12 wheels run on the
+# CUDA-13 stack (backward compatible); engines are tied to the TRT version
+# (10.15.1.29), not the cu12/cu13 wheel variant.
 tensorrt-cu12==10.15.1.29
 tensorrt-cu12-bindings==10.15.1.29
 tensorrt-cu12-libs==10.15.1.29
@@ -37,9 +26,7 @@ onnx-ir==0.2.1
 # Runtime helpers
 cupy-cuda12x==14.1.1
 polygraphy==0.50.3
-# TheStage CLI — needed once to set the access token (Step 3 of the README):
-#   thestage config set --access-token <YOUR_API_TOKEN>
-thestage
+thestage        # CLI to set the access token
 
 # diffusers / transformers (loader paths)
 diffusers==0.38.0
@@ -48,8 +35,3 @@ safetensors==0.8.0
 huggingface_hub==1.13.0
 sentencepiece==0.2.1
 numpy==2.4.6
-
-# fp4attn TRT plugin build (sm_120a only): do NOT clone CUTLASS by hand — run
-#   qlip-setup-plugins
-# It fetches the TRT C++ headers and the correct CUTLASS version (>= 4.1.0;
-# older tags like v3.5.1 FAIL to build fp4attn) and persists the env vars.

@@ -1,0 +1,17 @@
+# ComfyUI-Qlip — Hopper / Ada (CUDA 12) device stack.
+# Installed by install.py AFTER torch 2.9.1+cu12 (step 1) and ComfyUI's own
+# requirements under a constraints file (step 2). torch is NOT listed here — it is
+# installed first, from PyTorch's index, and held pinned by the constraints file.
+--extra-index-url https://thestage.jfrog.io/artifactory/api/pypi/pypi-thestage-ai-staging/simple
+
+qlip.core[nvidia]
+diffusers==0.37.1
+triton
+cupy-cuda12x==13.3.0
+cuda-python==12.8.0
+tensorrt-cu12==10.13.3.9
+tensorrt-cu12-bindings==10.13.3.9
+tensorrt-cu12-libs==10.13.3.9
+# TheStage CLI — needed once to set the access token:
+#   thestage config set --access-token <YOUR_API_TOKEN>
+thestage

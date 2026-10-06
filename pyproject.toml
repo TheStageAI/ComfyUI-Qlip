@@ -5,6 +5,64 @@ version = "1.0.0"
 license = { file = "LICENSE.txt" }
 requires-python = ">=3.10"
 
+# Dependencies common to every device (no CUDA runtime, no torch build here —
+# those are device-specific and live in the extras below). Installed on all
+# profiles.
+dependencies = [
+    "diffusers",
+    "safetensors",
+    "thestage",          # CLI to set the TheStage access token
+]
+
+# Device profiles (nvidia = Hopper/Ada CUDA 12, blackwell = RTX 5090 / B200
+# CUDA 13). Each extra is the CUDA runtime stack + qlip.core extra for one device —
+# the single source of truth that replaced requirements.txt / requirements_blackwell.txt.
+#
+# IMPORTANT — two things these extras deliberately do NOT (and cannot) express,
+# which is why `install.py` exists and is the recommended path:
+#   1. torch's device build (`torch==2.12.0+cu130`) lives on PyTorch's own index,
+#      not PyPI — install.py installs it first, with the right `--index-url`.
+#   2. `qlip.core` lives on the TheStage registry, not PyPI — install.py / pip
+#      needs `--extra-index-url <thestage>` for it to resolve.
+# So: `pip install "comfyui-qlip[blackwell]" --extra-index-url <thestage>` works
+# for everything EXCEPT torch itself; install.py wraps that plus the torch step
+# plus the constraints ordering.
+[project.optional-dependencies]
+# Hopper / Ada — CUDA 12.
+nvidia = [
+    "qlip.core[nvidia]",
+    "diffusers==0.37.1",
+    "triton",
+    "cupy-cuda12x==13.3.0",
+    "cuda-python==12.8.0",
+    "tensorrt-cu12==10.13.3.9",
+    "tensorrt-cu12-bindings==10.13.3.9",
+    "tensorrt-cu12-libs==10.13.3.9",
+    "torch==2.9.1",
+    "torchvision==0.24.1",
+    "torchaudio==2.9.1",
+]
+# Blackwell RTX 5090 (sm_120a) / B200 (sm_100) — CUDA 13.
+# torch 2.12.0+cu130 is installed by install.py from the cu130 index BEFORE this;
+# qlip.core[blackwell] must be installed with --no-deps so it can't pull cu12 torch.
+blackwell = [
+    "qlip.core[blackwell]",
+    "tensorrt-cu12==10.15.1.29",
+    "tensorrt-cu12-bindings==10.15.1.29",
+    "tensorrt-cu12-libs==10.15.1.29",
+    "onnx==1.20.1",
+    "onnxscript==0.7.0",
+    "onnx-ir==0.2.1",
+    "cupy-cuda12x==14.1.1",
+    "polygraphy==0.50.3",
+    "diffusers==0.38.0",
+    "transformers==5.10.2",
+    "safetensors==0.8.0",
+    "huggingface_hub==1.13.0",
+    "sentencepiece==0.2.1",
+    "numpy==2.4.6",
+]
+
 [project.urls]
 Repository = "https://github.com/TheStageAI/ComfyUI-Qlip"
 
@@ -12,3 +70,27 @@ Repository = "https://github.com/TheStageAI/ComfyUI-Qlip"
 PublisherId = "thestageai"
 DisplayName = "ComfyUI-Qlip"
 Icon = ""
+
+# --- lint / format (same rules as Qlip.Pytorch; run via pre-commit) -----------
+[tool.ruff]
+exclude = [".git", ".venv", "venv", "build", "dist", "backup", "bench", "docs"]
+line-length = 88
+indent-width = 4
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]
+ignore = [
+    "F841",  # local variable assigned but never used
+    "E731",  # lambda assignment
+    "F401",  # imported but unused (re-exports in __init__.py)
+]
+fixable = ["ALL"]
+unfixable = []
+dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
