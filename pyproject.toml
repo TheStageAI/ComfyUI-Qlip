@@ -70,3 +70,27 @@ Repository = "https://github.com/TheStageAI/ComfyUI-Qlip"
 PublisherId = "thestageai"
 DisplayName = "ComfyUI-Qlip"
 Icon = ""
+
+# --- lint / format (same rules as Qlip.Pytorch; run via pre-commit) -----------
+[tool.ruff]
+exclude = [".git", ".venv", "venv", "build", "dist", "backup", "bench", "docs"]
+line-length = 88
+indent-width = 4
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]
+ignore = [
+    "F841",  # local variable assigned but never used
+    "E731",  # lambda assignment
+    "F401",  # imported but unused (re-exports in __init__.py)
+]
+fixable = ["ALL"]
+unfixable = []
+dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"

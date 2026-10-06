@@ -42,10 +42,9 @@ def radial_power(x):
     (raw, un-normalized; the SNR normalization happens once, after averaging)."""
     C, H, W = x.shape
     Xf = torch.fft.fftshift(torch.fft.fft2(x.float()), dim=(-2, -1))
-    power = (Xf.real ** 2 + Xf.imag ** 2).mean(0)          # [H,W] avg over channels
+    power = (Xf.real**2 + Xf.imag**2).mean(0)  # [H,W] avg over channels
     cy, cx = H // 2, W // 2
-    yy, xx = torch.meshgrid(torch.arange(H) - cy, torch.arange(W) - cx,
-                            indexing="ij")
+    yy, xx = torch.meshgrid(torch.arange(H) - cy, torch.arange(W) - cx, indexing="ij")
     r_int = torch.sqrt((yy.float() ** 2 + xx.float() ** 2)).round().long()
     rmax = int(min(cy, cx))
     P = torch.zeros(rmax + 1)
@@ -92,25 +91,45 @@ DEFAULT_PROMPTS = [
 
 
 def main():
-    ap = argparse.ArgumentParser(description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--model", default="model",
-                    help="label for the model (used only in the printout / --out)")
-    ap.add_argument("--unet", required=True,
-                    help="diffusion model checkpoint, relative to the ComfyUI root")
-    ap.add_argument("--clip", required=True,
-                    help="text-encoder checkpoint, relative to the ComfyUI root")
-    ap.add_argument("--clip-type", default="KREA2",
-                    help="comfy CLIPType name (e.g. KREA2, FLUX, SD3)")
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    ap.add_argument(
+        "--model",
+        default="model",
+        help="label for the model (used only in the printout / --out)",
+    )
+    ap.add_argument(
+        "--unet",
+        required=True,
+        help="diffusion model checkpoint, relative to the ComfyUI root",
+    )
+    ap.add_argument(
+        "--clip",
+        required=True,
+        help="text-encoder checkpoint, relative to the ComfyUI root",
+    )
+    ap.add_argument(
+        "--clip-type",
+        default="KREA2",
+        help="comfy CLIPType name (e.g. KREA2, FLUX, SD3)",
+    )
     ap.add_argument("--n", type=int, default=3, help="number of generations to pool")
     ap.add_argument("--size", type=int, default=1024, help="image side in pixels")
     ap.add_argument("--steps", type=int, default=8)
     ap.add_argument("--sampler", default="euler")
     ap.add_argument("--scheduler", default="simple")
-    ap.add_argument("--prompt", action="append", default=None,
-                    help="override the built-in prompts (repeatable)")
-    ap.add_argument("--out", default=None,
-                    help="write A/beta to this file (default: <model>_spectrum.txt)")
+    ap.add_argument(
+        "--prompt",
+        action="append",
+        default=None,
+        help="override the built-in prompts (repeatable)",
+    )
+    ap.add_argument(
+        "--out",
+        default=None,
+        help="write A/beta to this file (default: <model>_spectrum.txt)",
+    )
     args = ap.parse_args()
 
     import comfy.sample
@@ -120,10 +139,12 @@ def main():
     model = comfy.sd.load_diffusion_model(args.unet)
     clip = comfy.sd.load_clip(ckpt_paths=[args.clip], clip_type=clip_type)
 
-    prompts = (args.prompt or DEFAULT_PROMPTS)[:args.n]
+    prompts = (args.prompt or DEFAULT_PROMPTS)[: args.n]
     if len(prompts) < args.n:
-        raise SystemExit(f"need {args.n} prompts, only {len(prompts)} available "
-                         f"— pass more with --prompt")
+        raise SystemExit(
+            f"need {args.n} prompts, only {len(prompts)} available "
+            f"— pass more with --prompt"
+        )
 
     hh = ww = args.size // 8
     lat = torch.zeros(1, 16, 1, hh, ww)
@@ -132,12 +153,22 @@ def main():
     neg = clip.encode_from_tokens_scheduled(clip.tokenize(""))
     for i, p in enumerate(prompts):
         cond = clip.encode_from_tokens_scheduled(clip.tokenize(p))
-        noise = torch.randn(1, 16, 1, hh, ww,
-                            generator=torch.manual_seed(1000 + i))
-        x0 = comfy.sample.sample(model, noise, args.steps, 1.0, args.sampler,
-                                 args.scheduler, cond, neg, lat, denoise=1.0,
-                                 disable_pbar=True, seed=1000 + i)
-        xf = x0.detach().float().squeeze(0).squeeze(1)      # [C,H,W]
+        noise = torch.randn(1, 16, 1, hh, ww, generator=torch.manual_seed(1000 + i))
+        x0 = comfy.sample.sample(
+            model,
+            noise,
+            args.steps,
+            1.0,
+            args.sampler,
+            args.scheduler,
+            cond,
+            neg,
+            lat,
+            denoise=1.0,
+            disable_pbar=True,
+            seed=1000 + i,
+        )
+        xf = x0.detach().float().squeeze(0).squeeze(1)  # [C,H,W]
         om, P = radial_power(xf)
         accum_P = P if accum_P is None else accum_P + P
         omega = om
@@ -153,21 +184,27 @@ def main():
     P = P / float(hh * ww)
     A, beta, r2, lo, hi = fit_power_law(omega, P)
 
-    print(f"\n=== {args.model} spectrum fit "
-          f"(n={len(prompts)}, {args.size}px, band [{lo},{hi}]) ===")
+    print(
+        f"\n=== {args.model} spectrum fit "
+        f"(n={len(prompts)}, {args.size}px, band [{lo},{hi}]) ==="
+    )
     print(f"A = {A:.6f}   beta = {beta:.6f}   R^2 = {r2:.4f}")
     if r2 < 0.9:
-        print("WARNING: R^2 < 0.9 — fit is weak; add more prompts (--n) or check "
-              "the model/clip/size are correct.")
+        print(
+            "WARNING: R^2 < 0.9 — fit is weak; add more prompts (--n) or check "
+            "the model/clip/size are correct."
+        )
     print("\n-> set these on the QlipProgressive node:")
-    print(f"     backbone_mode = spectral")
+    print("     backbone_mode = spectral")
     print(f"     speed_A       = {A:.6f}")
     print(f"     speed_beta    = {beta:.6f}")
 
     out = args.out or f"{args.model}_spectrum.txt"
     with open(out, "w") as f:
-        f.write(f"A={A:.6f}\nbeta={beta:.6f}\nR2={r2:.4f}\n"
-                f"n={len(prompts)}\nsize={args.size}\nmodel={args.model}\n")
+        f.write(
+            f"A={A:.6f}\nbeta={beta:.6f}\nR2={r2:.4f}\n"
+            f"n={len(prompts)}\nsize={args.size}\nmodel={args.model}\n"
+        )
     print(f"\nsaved -> {out}")
     print("FIT_DONE")
 

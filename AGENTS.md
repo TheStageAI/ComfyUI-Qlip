@@ -118,8 +118,7 @@ operating rules yourself each run, not from memory. From the tooltips extract, p
   model-specific quantity, DERIVE it with the provided tools; never assume a hidden
   default is correct.)
 - **Mutual exclusions / mode gating** — some params only apply in a mode (backbone_mode
-  only when switch_mode=auto; fn_blocks only when mode=block; a SAMPLER-emitting node
-  like QlipRestartSampler needs a SamplerCustom branch, not KSampler). Respect these in
+  only when switch_mode=auto; fn_blocks only when mode=block). Respect these in
   §5's axis coverage — don't sweep a param that its mode disables.
 - **Failure modes the tooltip warns about** (e.g. "aggressive = veil risk").
 
@@ -143,7 +142,7 @@ Wall time of one image ≈ `N_steps × (tokens × cost_per_token_per_block × n_
 | multiplier | lever family | node | saves |
 |---|---|---|---|
 | number of steps actually computed | **step cache** | QlipCache (mode=step) | whole model calls |
-| tokens per call | **resolution** | QlipProgressive, QlipRestartSampler; QlipTokenPrune (video) | tokens ∝ (latent side)² — a ×0.5 rung is 4× fewer tokens |
+| tokens per call | **resolution** | QlipProgressive; QlipTokenPrune (video) | tokens ∝ (latent side)² — a ×0.5 rung is 4× fewer tokens |
 | cost per token | **attention / kernels** | QlipAutoSparse, QlipDrafter (video); QlipCompile (fp8/fp4, sage-class attention) | attention share only (Amdahl) |
 | blocks per call | **block cache** | QlipCache (mode=block) | middle blocks |
 
@@ -182,11 +181,6 @@ Loader ─► [QlipEnginesLoader | QlipCompile]  ─► QlipProgressive ─► Q
   the wrong tensor. Progressive → Cache is the validated order.
 - **Attention / token levers last**, closest to the sampler; they act inside the
   blocks and are transparent to the two hooks before them.
-- `QlipAutoPilot` REPLACES Progressive + Cache (one knob, its own controller):
-  never chain it with them.
-- `QlipRestartSampler` is a SAMPLER, not a model hook: wire it into
-  `SamplerCustom.sampler`; it is mutually exclusive with QlipProgressive in one
-  config (both change the latent grid).
 - `QlipSpectrumFit` (or `tools/fit_spectrum.py`) runs ONCE per model+resolution
   before any spectral progressive config; wire the same `EmptyLatentImage` the
   sampler uses.
@@ -314,19 +308,7 @@ exist to keep the distinct blocks.
   If it crashes on a joint text+image token stream, log the signature and exclude.
 - Only on video: combine the best sparse/prune point with a mild step cache.
 
-### 2b-5. QlipRestartSampler (image, few-step) and QlipAutoPilot (one knob)
-
-- RestartSampler grows the latent grid at `switch_step` and restarts the
-  trajectory (`up_mode=carry` re-noises with the trajectory's own noise — the
-  clean choice on few-step models; fresh-noise modes need `renoise_strength 1.0`).
-  Ladder: `switch_step` N/2 → N/4 (`low_scale 0.5`), then `low_scale 0.25` once.
-  It replaces the sampler; it cannot be combined with QlipProgressive.
-- AutoPilot: `quality_target` 0.97 → 0.95 → 0.90: a single error-ledger knob that
-  drives cache and progressive itself. Probe it as its own config family (it
-  cannot be chained with Progressive/Cache); it is the right answer when the
-  client wants one slider rather than a frontier.
-
-### 2b-6. QlipCompile — the baseline lever
+### 2b-5. QlipCompile — the baseline lever
 
 Compilation (per-block torch.compile + fp8/fp4 GEMM + a sage-class attention
 kernel) raises the whole baseline: `quantize=fp8` on Hopper+, `fp4` on Blackwell,
@@ -336,7 +318,7 @@ per-config toggle: when present, it defines `<model>-engine` as the baseline
 (§3) and every lever above is measured relative to it. If it is absent, note in
 REPORT.md that it is available as the offline step that raises everything.
 
-### 2b-7. How to read "acceptable" and how to walk the ladder
+### 2b-6. How to read "acceptable" and how to walk the ladder
 
 Acceptable = the §4b two-part gate (typical prompt at most *slight*, worst 10 %
 not *strong*) on `texture, texture_gain, noise, haze, halo, mesh` AND the
@@ -377,7 +359,7 @@ qlip nodes (fine — see baseline cases). You:
      it just isn't a per-config toggle; it defines the baseline the search improves on.)
    - Either way: **baseline = same graph, acceleration hooks off.** Acceleration hooks =
      the per-config toggles (`QlipProgressive`, `QlipCache`, `QlipAutoSparse`,
-     `QlipDrafter`, `QlipRestartSampler`). `QlipCompile`/`QlipEnginesLoader`/`QlipLora*`
+     `QlipDrafter`). `QlipCompile`/`QlipEnginesLoader`/`QlipLora*`
      are model-definition nodes — left AS GIVEN in both baseline and candidates.
 
 3. **Insert acceleration nodes** into the right points (types/ranges from §2; per-node
@@ -385,8 +367,6 @@ qlip nodes (fine — see baseline cases). You:
    - Model-hooks: splice into the `MODEL` line between the model source (loader OR the
      `QlipEnginesLoader`/`QlipLoraSwitch` output) and `KSampler.model`, chained e.g.
      `… → QlipProgressive → QlipCache → KSampler`.
-   - `QlipRestartSampler`: emits a `SAMPLER`, wire into `SamplerCustom` (mutually
-     exclusive with the progressive hook in one run).
    - Keep an `enable` input on every acceleration node. **Baseline = all acceleration
      `enable=false`** so one workflow serves the reference AND every candidate via `--set`.
    - **Several MODEL lines = several hook targets.** A graph may run more than one
@@ -424,18 +404,18 @@ Everything is measured through **qlip-arena** — never eyeball quality.
   importantly, in tokens: one line per config. It is also **measurably blind** to
   veil, halo, mesh and speckle — so the loop's frontier is provisional. At CLOSURE
   the frontier set (plus a margin of runners-up) gets the full degradation judge
-  (`arena verdict` / `arena fpcharts`: every axis, the two-part gate, the comparison
+  (`arena verdict` / `arena dashboard`: every axis, the two-part gate, the comparison
   mode, the rank with CI), and the final choice is made from that table. Never
   recommend from the light readout.
 - Objective: **max speedup subject to passing the arena's degradation gate** (§4b:
-  `arena gate` on the fpcharts axes + a fpcharts quality rank whose CI overlaps the
+  `arena gate` on the defect axes + a dashboard quality rank whose CI overlaps the
   leader's or is within 1.0 of it). `mean_lpips ≤ tol` (default tol=0.35 image) is
   reported for every config and used as the *fidelity* readout, but it is NOT the
   decision: LPIPS cannot tell "the scene was damaged" from "the scene was re-decided
   at the same quality" (progressive/distilled levers do the latter), and the
   preference judges cannot see veil, halo or mesh at all (measured). The
-  defect-axis verdict from `fpcharts` decides; LPIPS and Elo explain. Report the whole
-  Pareto front (speed × fpcharts quality rank) too.
+  defect-axis verdict from the dashboard summary decides; LPIPS and Elo explain. Report the whole
+  Pareto front (speed × quality rank) too.
 - **Suite (the prompts).** Use the arena's built-in FIXED suite — `suite_v1.jsonl` for
   IMAGE (120 prompts across people/scene/composition/dense/text/style/short),
   `suite_video_v1.jsonl` for VIDEO (24). It is the SAME across all models of that
@@ -443,7 +423,7 @@ Everything is measured through **qlip-arena** — never eyeball quality.
   honest. Do NOT hand-pick per-model prompts (that would let you cherry-pick easy
   cases). The only split is by modality (image vs video). Start with `--n 16`; a fixed
   seed (1000), same seed for the baseline.
-- **Three judges, different jobs.** `fingerprint` (+ `fpcharts` over the set) =
+- **Three judges, different jobs.** `fingerprint` (+ the dashboard summary over the set) =
   the DECIDER: one number per defect in physical units vs the eager baseline, the
   learned halo/mesh/ringing axes, the comparison mode (aligned / layout moved / scene
   replaced) and a quality ranking with bootstrap CI and `p_best`. `qlipmetrics` =
@@ -453,7 +433,7 @@ Everything is measured through **qlip-arena** — never eyeball quality.
   `ensemble` = human-preference: PickScore + HPSv2 → a Bradley-Terry **Δelo**; run it
   too, because it catches "looks better to a person" — but it prefers veiled/smoothed
   images (measured: PickScore picks the veiled image 63 % of the time), so a positive
-  Δelo NEVER overrides a fired defect axis. So: fpcharts/gate decides IN/OUT and the
+  Δelo NEVER overrides a fired defect axis. So: the defect verdict / gate decides IN/OUT and the
   order; LPIPS tells how far from eager and, together with the comparison mode, whether
   the config re-decides the composition; Elo flags user-preferred points among the
   survivors.
@@ -495,7 +475,7 @@ Use it in two places:
    arena verdict --light --b <baseline> --a <cfg1> <cfg2> … --out-json <work>/verdicts/batchN.json
    ```
    One line per config: `speedup · win-rate · Δelo [CI] · W/T/L · n`. That is all you
-   read in the loop — no fingerprint, no inspect, no fpcharts, no HTML, no raw logs.
+   read in the loop — no fingerprint, no inspect, no dashboard, no HTML, no raw logs.
    Frontier law in the loop: RETAIN a config if it improves speed at a non-worse Δelo
    (CI-aware: Δelo intervals that overlap are the same) or improves Δelo at the same
    speed; DISCARD dominated; REJECT no-ops (speedup within 0.05 of 1.0) and crashes.
@@ -512,21 +492,48 @@ Use it in two places:
    ```
    arena verdict --b <baseline> --a <frontier+margin> --out-json <work>/report/verdict_final.json
    ```
-   (fingerprint + pickscore auto-judged; prints per config: speedup, the two-part
-   gate with the failing axes, faithful / creative / rejected, comparison mode,
-   quality rank with CI, LPIPS if qlipmetrics was run). **Make the final choice from
-   this table**: the fastest *faithful* config whose rank CI overlaps the best
-   faithful one (the §4 rule); if the loop's favourite fails the gate, take the next
-   survivor — do NOT reopen the search, report it as the cost of the light loop. Then,
-   over the same set (ordered mild → aggressive), the client-facing page:
+   (fingerprint + pickscore auto-judged; prints per config: speedup, **Q** — the
+   single quality number, 100 = identical, 50 = every axis at "just noticeable" —,
+   **V = speedup·Q/100** — the effective speedup, V < 1 is worse than doing nothing —,
+   the two-part gate with the failing axes, faithful / creative / rejected, comparison
+   mode, quality rank with CI, LPIPS if qlipmetrics was run). The rows come out in
+   **release order**: faithful + gate first, then creative + gate, then rejected,
+   inside a tier by V. **Make the final choice from this table**: the first row is the
+   recommendation unless its rank CI overlaps a faster faithful row (then the faster
+   one, the §4 rule); if the loop's favourite fails the gate, take the next survivor —
+   do NOT reopen the search, report it as the cost of the light loop. Q sorts, it never
+   replaces the gate. Then, over the same set (ordered mild → aggressive), the
+   client-facing page — ONE report, the dashboard (no `arena fpcharts`, no
+   `degradation.html`: the dashboard contains the radars, the matrix and the
+   ranking, and writes the same `fpcharts_data.json` for `gate` / `qlip_report`):
    ```
-   arena fpcharts --b <baseline> --a <cfg1> <cfg2> <cfg3> --out <work>/report/degradation.html
+   arena dashboard --b <baseline> --a <cfg1> <cfg2> <cfg3> --out <work>/report/dashboard --device cuda --single-file
    ```
+   `--single-file` also writes `index_single.html` (~20 MB, images inlined) — the
+   file to attach to the ticket; `index.html` needs its `img/` and `maps/` folders.
+   Arena v4 (2026-09-09): the gate is `pass` / `fail` / **`insufficient`** — a
+   required axis (haze, noise, ghost, texture, texture_gain, halo, mesh) that is
+   not measured on enough prompts can never pass; the class can be `unknown`
+   (structure model unavailable). Treat INSUFFICIENT / unknown as "not ready",
+   never as a pass. Q and V are HEURISTIC summaries; the gate is the decision.
+   Every verdict carries `estimator_version`; numbers from different versions
+   are never mixed (stale battles are re-judged automatically).
+   `arena gate` exits 3 on insufficient data and 2 on a bundle without raw
+   observations.
+   The dashboard is one interactive page (release table, frontier, defect matrix in
+   threshold units, problems in words, PickScore pairs, image explorer with ×4 diff
+   and defect heat-maps). **Use it as your eyes before the final choice**: for the
+   recommended config and every frontier point open `<work>/report/dashboard/img/`
+   and `maps/` — Read the candidate thumbnail, the baseline thumbnail and the
+   `<prompt>_<head>.png` maps of the 3 worst prompts (from `data.json →
+   per_cfg[cfg].worst_by_axis`), and say in REPORT.md what you SAW (where the halo /
+   speckle / smoothing sits, on which objects), not only what the numbers say. A
+   number without a looked-at image is not a closure.
    Do NOT put every searched config on the client page — 30+ columns of matrix, radar
    and charts are unreadable and the reader cannot act on them. The all-config
-   fpcharts you use for the decision goes to `<work>/report/all/` (for the journal and
-   for `qlip_report.py --fpcharts`, which needs every config's summary to classify
-   them); the client sees the frontier page. `qlip_report.py` does the same by default
+   dashboard you use for the decision goes to `<work>/report/all/` (for the journal and
+   for `qlip_report.py --fpcharts <work>/report/all/fpcharts_data.json`, which needs
+   every config's summary to classify them); the client sees the frontier page. `qlip_report.py` does the same by default
    (`--report-set frontier`): charts, collage and `workflows/` cover the frontier set,
    the rest is listed by name with the reason (dominated / no-op / gate) and kept in
    `report.json`.
@@ -547,7 +554,7 @@ No baseline at hand (e.g. checking a single output folder)? `arena qdm --images 
 scores each image alone and prints a one-line defect passport in words.
 
 Two more checks that belong in the closure gate:
-- **Statistical tie.** The fpcharts verdict prints a 95 % CI and `p_best` per config;
+- **Statistical tie.** The verdict prints a 95 % CI and `p_best` per config;
   two frontier points whose rank CIs overlap are NOT separated by the data — say so in
   REPORT.md instead of declaring a winner by 0.1 rank.
 - **Machine gate.** The two-part `arena gate` from the loop above (median ≤ threshold
@@ -592,7 +599,6 @@ attention/token — but QlipProgressive works on BOTH: cover it on video too.)
   selector (diversity AND ≥1 other incl. tau) · correction (none AND ≥1 vspace).
 - **QlipDrafter** (video): split_step (≥2) · sparsity (≥2).
 - **QlipTokenPrune** (video): keep_ratio (≥2) · step window (≥1 non-default).
-- **QlipRestartSampler** (image): switch_step (≥2) · low_scale (≥2) · up_mode (≥2).
 - **Per-line asymmetry** (mandatory whenever the graph has ≥2 MODEL lines, §3): for
   each lever, ≥1 config where only the secondary line (unconditional / negative /
   low-noise expert) is accelerated, and ≥1 where the two lines get different
@@ -656,14 +662,14 @@ The expensive resource is not the GPU, it is your context. Rules:
   queue them as ONE detached job, arm ONE wait for `BATCH DONE`. One wake-up per
   batch, never per config.
 - **One table per batch.** `arena verdict --light` over the batch is the only thing
-  you read. Never open fpcharts HTML, never `cat` generation logs or ComfyUI logs —
+  you read. Never open the dashboard HTML in the loop, never `cat` generation logs or ComfyUI logs —
   `tail -3` of the batch log on failure only, `grep -c` for progress.
 - **Journal in lines, not prose.** One line per config (name · --set delta · speedup ·
   Δelo [CI] · W/T/L · verdict); a hypothesis is one line with the 2b-0 expectation.
 - **No re-derivation.** Read `/object_info` once, write the parameter table to the
   journal, never re-print it. Fit the spectrum once.
 - **Heavy artifacts once.** fingerprint, qlipmetrics, ensemble, adherence, inspect,
-  fpcharts, qlip_report, collage — all at closure, all over the frontier set + margin.
+  dashboard, qlip_report, collage — all at closure, all over the frontier set + margin.
 - **Sync less.** JOURNAL/STATUS to the local work dir once per batch, the report at
   the end.
 
@@ -730,7 +736,7 @@ certainly means axes were skipped, not that the frontier saturated — check the
 2. **OFF-identity proven**: baseline (all acceleration off) ≈ eager (mean_lpips ≈ 0).
 3. Every applicable lever's axes above covered, OR the lever excluded with a logged
    reason (crash signature / no-op / Amdahl-irrelevant for this modality).
-4. The full judge (`arena verdict` / fpcharts with every axis, plus qlipmetrics and
+4. The full judge (`arena verdict` / dashboard with every axis, plus qlipmetrics and
    ensemble) on the frontier set + margin, and `arena gate` exit 0 on the recommended
    best. The loop itself used the light readout only — say so in REPORT.md.
 5. The frontier names, explicitly: the **best-speed point and its quality cost**
@@ -754,7 +760,7 @@ $VENV <ComfyUI-Qlip>/tools/qlip_report.py \
     --tol 0.35 \
     --out <work>/report \
     --model <model> --gpu "<your GPU>" \
-    --fpcharts <work>/report/fpcharts_data.json \  # REQUIRED: the fpcharts summary over the frontier set + margin (§4b-2) — the verdict decides
+    --fpcharts <work>/report/all/fpcharts_data.json \  # REQUIRED: the summary the all-config dashboard writes (§4b-2) — the verdict decides
     --report-set frontier \                      # default: charts / collage / workflows cover the frontier set only
     --workflow <work>/<model>_qlip_api.json \    # API graph → best_workflow.json (queue-ready)
     --ui-workflow <original UI-format workflow.json> \  # UI graph → *_ui.json (canvas-openable)
@@ -781,8 +787,8 @@ It reads the exported arena JSONs and writes:
 - `report.json` — every config with (speedup, mean_lpips, Δelo), the Pareto frontier,
   and the single recommended best config for the LPIPS tolerance. **This LPIPS-based
   pick is provisional**: the recommended best in REPORT.md and `best_workflow*.json`
-  MUST be the config chosen by the §4b rule (gate exit 0 + fpcharts rank, faithful
-  mode). If qlip_report's pick differs, re-run it with `--point <fpcharts-best>` and
+  MUST be the config chosen by the §4b rule (gate exit 0 + quality rank, faithful
+  mode). If qlip_report's pick differs, re-run it with `--point <verdict-best>` and
   state in REPORT.md which axis/mode disqualified the LPIPS pick;
 - `frontier.png` — speed × quality scatter, each point coloured by the arena judge's
   verdict vs eager (green=win, grey=tie, red=lose) so you see where pixels differ but the
@@ -860,7 +866,6 @@ Acceleration hooks (the per-config toggles you search over):
 - **QlipCache** — temporal reuse across steps/blocks.
 - **QlipAutoSparse** — video attention sparsity.
 - **QlipDrafter** — video self-speculative sparse-draft.
-- **QlipRestartSampler** — image, a `SAMPLER` (grid-grow restart).
 
 Model-definition nodes (NOT searched; define the baseline, left as given):
 - **QlipCompile** / **QlipQuantConfig** — compile the model to a TRT/fp8/int8 engine.

@@ -1,0 +1,196 @@
+{
+  "9": {
+    "inputs": {
+      "filename_prefix": "z-image-turbo",
+      "images": [
+        "65",
+        0
+      ]
+    },
+    "class_type": "SaveImage",
+    "_meta": {
+      "title": "Сохранить изображение"
+    }
+  },
+  "62": {
+    "inputs": {
+      "clip_name": "qwen_3_4b.safetensors",
+      "type": "lumina2",
+      "device": "default"
+    },
+    "class_type": "CLIPLoader",
+    "_meta": {
+      "title": "Загрузить CLIP"
+    }
+  },
+  "63": {
+    "inputs": {
+      "vae_name": "ae.safetensors"
+    },
+    "class_type": "VAELoader",
+    "_meta": {
+      "title": "Загрузить VAE"
+    }
+  },
+  "64": {
+    "inputs": {
+      "conditioning": [
+        "67",
+        0
+      ]
+    },
+    "class_type": "ConditioningZeroOut",
+    "_meta": {
+      "title": "Обнуление кондиционирования"
+    }
+  },
+  "65": {
+    "inputs": {
+      "samples": [
+        "72",
+        0
+      ],
+      "vae": [
+        "63",
+        0
+      ]
+    },
+    "class_type": "VAEDecode",
+    "_meta": {
+      "title": "Декодировать VAE"
+    }
+  },
+  "66": {
+    "inputs": {
+      "unet_name": "z_image_turbo_bf16.safetensors",
+      "weight_dtype": "default"
+    },
+    "class_type": "UNETLoader",
+    "_meta": {
+      "title": "Загрузить модель диффузии"
+    }
+  },
+  "67": {
+    "inputs": {
+      "text": "Pixel art style. Latina female with thick wavy hair, harbor boats and pastel houses behind. Breezy seaside light, warm tones, cinematic close-up.",
+      "clip": [
+        "62",
+        0
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "Кодирование текста CLIP (Запрос)"
+    }
+  },
+  "68": {
+    "inputs": {
+      "width": 1024,
+      "height": 1024,
+      "batch_size": 1
+    },
+    "class_type": "EmptySD3LatentImage",
+    "_meta": {
+      "title": "Пустой SD3LatentImage"
+    }
+  },
+  "69": {
+    "inputs": {
+      "shift": 3,
+      "model": [
+        "66",
+        0
+      ]
+    },
+    "class_type": "ModelSamplingAuraFlow",
+    "_meta": {
+      "title": "Выборка модели AuraFlow"
+    }
+  },
+  "70": {
+    "inputs": {
+      "seed": 104563090580707,
+      "steps": 8,
+      "cfg": 1,
+      "sampler_name": "res_multistep",
+      "scheduler": "simple",
+      "denoise": 1,
+      "model": [
+        "71",
+        0
+      ],
+      "positive": [
+        "67",
+        0
+      ],
+      "negative": [
+        "64",
+        0
+      ],
+      "latent_image": [
+        "68",
+        0
+      ]
+    },
+    "class_type": "KSampler",
+    "_meta": {
+      "title": "KSampler"
+    }
+  },
+  "71": {
+    "inputs": {
+      "timer_name": "sampler",
+      "cuda_sync": true,
+      "passthrough": [
+        "75",
+        0
+      ]
+    },
+    "class_type": "QlipTimerStart",
+    "_meta": {
+      "title": "Qlip Timer Start"
+    }
+  },
+  "72": {
+    "inputs": {
+      "timer_name": "sampler",
+      "cuda_sync": true,
+      "passthrough": [
+        "70",
+        0
+      ]
+    },
+    "class_type": "QlipTimerStop",
+    "_meta": {
+      "title": "Qlip Timer Stop"
+    }
+  },
+  "73": {
+    "inputs": {
+      "track_cold_start": true,
+      "trigger": [
+        "65",
+        0
+      ]
+    },
+    "class_type": "QlipTimerReport",
+    "_meta": {
+      "title": "Qlip Timer Report"
+    }
+  },
+  "75": {
+    "inputs": {
+      "engines_path": "",
+      "hf_repo": "TheStageAI/Elastic-Z-Image-Turbo:models/H100/z-image-turbo-fp8_lora",
+      "cuda_graph": false,
+      "model": [
+        "69",
+        0
+      ]
+    },
+    "class_type": "QlipEnginesLoader",
+    "_meta": {
+      "title": "Qlip Engines Loader"
+    }
+  }
+}

@@ -1,15 +1,20 @@
-from .nodes import QlipEnginesLoader, QlipLoraStack, QlipLoraSwitch
-from .nodes import QlipTimerStart, QlipTimerStop, QlipTimerReport
-from .nodes import QlipCache, QlipCacheReport
-from .nodes import QlipAutoSparse
-from .nodes import QlipProgressive
-from .nodes import QlipSpectrumFit
-# from .nodes import QlipRestartSampler
-from .nodes import QlipCompile, QlipQuantConfig
-# from .nodes import QlipAutoPilot
-# from .nodes import QlipSchedule
-from .nodes import QlipDrafter
-from .nodes import QlipTokenPrune
+from .nodes import (
+    QlipAutoSparse,
+    QlipCache,
+    QlipCacheReport,
+    QlipCompile,
+    QlipDrafter,
+    QlipEnginesLoader,
+    QlipLoraStack,
+    QlipLoraSwitch,
+    QlipProgressive,
+    QlipQuantConfig,
+    QlipSpectrumFit,
+    QlipTimerReport,
+    QlipTimerStart,
+    QlipTimerStop,
+    QlipTokenPrune,
+)
 
 NODE_CLASS_MAPPINGS = {
     "QlipEnginesLoader": QlipEnginesLoader,
@@ -23,11 +28,8 @@ NODE_CLASS_MAPPINGS = {
     "QlipAutoSparse": QlipAutoSparse,
     "QlipProgressive": QlipProgressive,
     "QlipSpectrumFit": QlipSpectrumFit,
-    # "QlipRestartSampler": QlipRestartSampler,
     "QlipCompile": QlipCompile,
     "QlipQuantConfig": QlipQuantConfig,
-    # "QlipAutoPilot": QlipAutoPilot,
-    # "QlipSchedule": QlipSchedule,
     "QlipDrafter": QlipDrafter,
     "QlipTokenPrune": QlipTokenPrune,
 }
@@ -44,11 +46,8 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "QlipAutoSparse": "Qlip Auto Sparse",
     "QlipProgressive": "Qlip Progressive",
     "QlipSpectrumFit": "Qlip Spectrum Fit",
-    # "QlipRestartSampler": "Qlip Restart Sampler",
     "QlipCompile": "Qlip Compile",
     "QlipQuantConfig": "Qlip Quant Config",
-    # "QlipAutoPilot": "Qlip AutoPilot",
-    # "QlipSchedule": "Qlip Schedule",
     "QlipDrafter": "Qlip Drafter",
     "QlipTokenPrune": "Qlip Token Prune",
 }

@@ -95,24 +95,27 @@ def load_entries(results_dir, baseline, config_map=None):
         if lpips is None:
             lpips = qm.get("median_lpips")
         name = d.get("name", os.path.basename(path))
-        entries.append({
-            "name": name,
-            "method": d.get("method", ""),
-            "speedup": float(speedup),
-            "sampler_speedup": d.get("sampler_speedup"),
-            "mean_lpips": float(lpips) if lpips is not None else None,
-            "elo_delta": ens.get("elo_delta"),
-            # arena preference verdict vs the eager baseline (ensemble judge):
-            # how the judge scored the accelerated output against eager, per prompt.
-            "wins": ens.get("wins"),
-            "losses": ens.get("losses"),
-            "ties": ens.get("ties"),
-            "winrate_a": ens.get("winrate_a"),
-            "config": _as_str(config_map.get(name)
-                              or d.get("config") or d.get("overrides") or ""),
-            "wall_s": d.get("wall_s"),
-            "source": os.path.basename(path),
-        })
+        entries.append(
+            {
+                "name": name,
+                "method": d.get("method", ""),
+                "speedup": float(speedup),
+                "sampler_speedup": d.get("sampler_speedup"),
+                "mean_lpips": float(lpips) if lpips is not None else None,
+                "elo_delta": ens.get("elo_delta"),
+                # arena preference verdict vs the eager baseline (ensemble judge):
+                # how the judge scored the accelerated output against eager, per prompt.
+                "wins": ens.get("wins"),
+                "losses": ens.get("losses"),
+                "ties": ens.get("ties"),
+                "winrate_a": ens.get("winrate_a"),
+                "config": _as_str(
+                    config_map.get(name) or d.get("config") or d.get("overrides") or ""
+                ),
+                "wall_s": d.get("wall_s"),
+                "source": os.path.basename(path),
+            }
+        )
     return entries
 
 
@@ -141,7 +144,8 @@ def pareto_front(entries, qkey="mean_lpips"):
             and o["speedup"] >= e["speedup"]
             and o[qkey] <= e[qkey]
             and (o["speedup"] > e["speedup"] or o[qkey] < e[qkey])
-            for o in scored)
+            for o in scored
+        )
         if not dominated:
             front.append(e)
     front.sort(key=lambda e: e["speedup"])
@@ -161,7 +165,15 @@ def recommend(front, tol):
 # Elo explain). See AGENTS.md §4 / §4b.
 # ---------------------------------------------------------------------------
 
-DEFAULT_GATE = ["texture=0.15", "texture_gain", "noise", "halo", "mesh", "haze"]
+DEFAULT_GATE = [
+    "texture=0.15",
+    "texture_gain",
+    "noise",
+    "halo",
+    "mesh",
+    "haze",
+    "ghost",
+]
 
 
 def load_fpcharts(path):
@@ -173,6 +185,7 @@ def load_fpcharts(path):
 
 def _p_stat(vals, stat):
     import numpy as np
+
     a = np.asarray(vals, float)
     if stat == "median":
         return float(np.median(a))
@@ -213,8 +226,16 @@ def evaluate_gate(doc, summary, cfg, limits, stat="median", tail_mult=2.0):
     return (not fails), fails
 
 
-def attach_fpcharts(entries, doc, summary, gate_limits, gate_stat="median",
-                    replaced_max=0.25, moved_max=0.5, tail_mult=2.0):
+def attach_fpcharts(
+    entries,
+    doc,
+    summary,
+    gate_limits,
+    gate_stat="median",
+    replaced_max=0.25,
+    moved_max=0.5,
+    tail_mult=2.0,
+):
     """Add the fpcharts verdict to each entry: quality_rank, rank_ci, p_best,
     per-axis wins/losses, comparison mode, gate result and the resulting
     class: 'faithful' (eligible), 'creative' (re-decides the composition —
@@ -231,18 +252,24 @@ def attach_fpcharts(entries, doc, summary, gate_limits, gate_stat="median",
         e["pickscore_wr"] = s.get("pickscore_wr")
         ranks = s.get("axis_ranks", {}) or {}
         n_cfg = len(cfgs)
-        e["axes_won"] = sorted(ax for ax, rk in ranks.items() if rk is not None and rk <= 1.0)
-        e["axes_lost"] = sorted(ax for ax, rk in ranks.items()
-                                if rk is not None and n_cfg > 1 and rk >= n_cfg)
+        e["axes_won"] = sorted(
+            ax for ax, rk in ranks.items() if rk is not None and rk <= 1.0
+        )
+        e["axes_lost"] = sorted(
+            ax
+            for ax, rk in ranks.items()
+            if rk is not None and n_cfg > 1 and rk >= n_cfg
+        )
         e["axes_ranked"] = len(ranks)
         e["mode"] = s.get("mode", {})
         m = e["mode"]
         n = max(m.get("n", 0), 1)
-        e["re_deciding"] = (m.get("replaced", 0) / n > replaced_max
-                            or m.get("moved", 0) / n > moved_max)
-        e["gate_passed"], e["gate_fails"] = evaluate_gate(doc, summary, e["name"],
-                                                          gate_limits, gate_stat,
-                                                          tail_mult)
+        e["re_deciding"] = (
+            m.get("replaced", 0) / n > replaced_max or m.get("moved", 0) / n > moved_max
+        )
+        e["gate_passed"], e["gate_fails"] = evaluate_gate(
+            doc, summary, e["name"], gate_limits, gate_stat, tail_mult
+        )
         if not e["gate_passed"]:
             e["fp_class"] = "rejected"
         elif e["re_deciding"]:
@@ -261,20 +288,29 @@ def recommend_fp(front, slack=1.0):
     if not elig:
         return None, "no faithful config passed the gate"
     leader = min(elig, key=lambda e: e["quality_rank"])
-    lo_l, hi_l = leader.get("rank_ci") or (leader["quality_rank"],
-                                           leader["quality_rank"])
-    tied = [e for e in elig
-            if (e.get("rank_ci") or (e["quality_rank"], e["quality_rank"]))[0] <= hi_l]
+    lo_l, hi_l = leader.get("rank_ci") or (
+        leader["quality_rank"],
+        leader["quality_rank"],
+    )
+    tied = [
+        e
+        for e in elig
+        if (e.get("rank_ci") or (e["quality_rank"], e["quality_rank"]))[0] <= hi_l
+    ]
     if tied:
         best = max(tied, key=lambda e: e["speedup"])
-        return best, (f"fastest config whose quality-rank CI overlaps the "
-                      f"leader's ({leader['name']} {leader['quality_rank']:.2f} "
-                      f"[{lo_l:.1f}–{hi_l:.1f}]) — a statistical tie on quality")
+        return best, (
+            f"fastest config whose quality-rank CI overlaps the "
+            f"leader's ({leader['name']} {leader['quality_rank']:.2f} "
+            f"[{lo_l:.1f}–{hi_l:.1f}]) — a statistical tie on quality"
+        )
     near = [e for e in elig if e["quality_rank"] <= leader["quality_rank"] + slack]
     best = max(near, key=lambda e: e["speedup"])
-    return best, (f"COMPROMISE: no faster config is statistically tied with the "
-                  f"leader ({leader['name']}); fastest within {slack:.1f} rank "
-                  f"of it")
+    return best, (
+        f"COMPROMISE: no faster config is statistically tied with the "
+        f"leader ({leader['name']}); fastest within {slack:.1f} rank "
+        f"of it"
+    )
 
 
 def parse_overrides(cfg_str):
@@ -302,16 +338,20 @@ def write_json(entries, front, best, tol, out_dir, meta):
         "gpu": meta.get("gpu"),
         "baseline": meta.get("baseline"),
         "quality_tolerance_lpips": tol,
-        "decision": meta.get("decision"),          # fpcharts rule details or None
+        "decision": meta.get("decision"),  # fpcharts rule details or None
         "n_configs": len(entries),
         "recommended": best,
         "frontier": front,
         "creative": [e for e in entries if e.get("fp_class") == "creative"],
         "rejected_by_gate": [e for e in entries if e.get("fp_class") == "rejected"],
         "all_configs": sorted(entries, key=lambda e: -e["speedup"]),
-        "dominated": [e["name"] for e in entries if e["name"] not in front_names
-                      and e.get(meta.get("qkey", "mean_lpips")) is not None
-                      and e.get("fp_class") in (None, "faithful")],
+        "dominated": [
+            e["name"]
+            for e in entries
+            if e["name"] not in front_names
+            and e.get(meta.get("qkey", "mean_lpips")) is not None
+            and e.get("fp_class") in (None, "faithful")
+        ],
     }
     path = os.path.join(out_dir, "report.json")
     json.dump(report, open(path, "w"), indent=2)
@@ -321,12 +361,16 @@ def write_json(entries, front, best, tol, out_dir, meta):
 def plot_frontier(entries, front, best, out_dir):
     try:
         import matplotlib
+
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
     except Exception:
         return None
-    qkey = "quality_rank" if any(e.get("quality_rank") is not None
-                                 for e in entries) else "mean_lpips"
+    qkey = (
+        "quality_rank"
+        if any(e.get("quality_rank") is not None for e in entries)
+        else "mean_lpips"
+    )
     scored = [e for e in entries if e.get(qkey) is not None]
     if not scored:
         return None
@@ -341,10 +385,22 @@ def plot_frontier(entries, front, best, out_dir):
         pts = [e for e in faithful if _verdict(e) == v]
         if not pts:
             continue
-        lbl = {"win": "judge: win vs eager", "tie": "judge: tie",
-               "lose": "judge: lose", None: "no judge"}[v]
-        ax.scatter([e["speedup"] for e in pts], [e[qkey] for e in pts],
-                   c=vcol[v], s=54, label=lbl, zorder=2, edgecolor="white", lw=0.5)
+        lbl = {
+            "win": "judge: win vs eager",
+            "tie": "judge: tie",
+            "lose": "judge: lose",
+            None: "no judge",
+        }[v]
+        ax.scatter(
+            [e["speedup"] for e in pts],
+            [e[qkey] for e in pts],
+            c=vcol[v],
+            s=54,
+            label=lbl,
+            zorder=2,
+            edgecolor="white",
+            lw=0.5,
+        )
     if qkey == "quality_rank":
         # bootstrap CI of the rank as a thin vertical bar
         for e in faithful:
@@ -353,32 +409,66 @@ def plot_frontier(entries, front, best, out_dir):
                 ax.plot([e["speedup"]] * 2, ci, color="#9aa0a6", lw=0.8, zorder=1)
         creative = [e for e in scored if e.get("fp_class") == "creative"]
         if creative:
-            ax.scatter([e["speedup"] for e in creative],
-                       [e[qkey] for e in creative], facecolors="none",
-                       edgecolors="#7b1fa2", s=70, lw=1.4, zorder=2,
-                       label="re-decides the scene (creative point)")
+            ax.scatter(
+                [e["speedup"] for e in creative],
+                [e[qkey] for e in creative],
+                facecolors="none",
+                edgecolors="#7b1fa2",
+                s=70,
+                lw=1.4,
+                zorder=2,
+                label="re-decides the scene (creative point)",
+            )
         rejected = [e for e in scored if e.get("fp_class") == "rejected"]
         if rejected:
-            ax.scatter([e["speedup"] for e in rejected],
-                       [e[qkey] for e in rejected], marker="x", c="#d93025",
-                       s=60, lw=1.4, zorder=2, label="fails the defect gate")
+            ax.scatter(
+                [e["speedup"] for e in rejected],
+                [e[qkey] for e in rejected],
+                marker="x",
+                c="#d93025",
+                s=60,
+                lw=1.4,
+                zorder=2,
+                label="fails the defect gate",
+            )
         for e in creative + rejected:
-            ax.annotate(e["name"], (e["speedup"], e[qkey]), fontsize=6.5,
-                        color="#5f6368", xytext=(4, -9), textcoords="offset points")
+            ax.annotate(
+                e["name"],
+                (e["speedup"], e[qkey]),
+                fontsize=6.5,
+                color="#5f6368",
+                xytext=(4, -9),
+                textcoords="offset points",
+            )
     fx = [e["speedup"] for e in front]
     fy = [e[qkey] for e in front]
     ax.plot(fx, fy, "-", color="#1a73e8", lw=2, label="Pareto frontier", zorder=3)
     if best:
-        ax.scatter([best["speedup"]], [best[qkey]], marker="*",
-                   s=440, color="#f9ab00", edgecolor="#3c4043", lw=1.2,
-                   label="recommended", zorder=4)
+        ax.scatter(
+            [best["speedup"]],
+            [best[qkey]],
+            marker="*",
+            s=440,
+            color="#f9ab00",
+            edgecolor="#3c4043",
+            lw=1.2,
+            label="recommended",
+            zorder=4,
+        )
     for e in front:
-        ax.annotate(e["name"], (e["speedup"], e[qkey]),
-                    fontsize=7, xytext=(4, 4), textcoords="offset points")
+        ax.annotate(
+            e["name"],
+            (e["speedup"], e[qkey]),
+            fontsize=7,
+            xytext=(4, 4),
+            textcoords="offset points",
+        )
     ax.set_xlabel("speedup ×  (higher = faster)")
     if qkey == "quality_rank":
         ax.set_ylabel("arena quality rank, fpcharts  (1 = best; bar = 95 % CI)")
-        ax.set_title("QLIP: speed × quality — defect-axis rank; colour = preference judge")
+        ax.set_title(
+            "QLIP: speed × quality — defect-axis rank; colour = preference judge"
+        )
     else:
         ax.set_ylabel("mean LPIPS vs eager  (lower = better)")
         ax.set_title("QLIP: speed × quality — point colour = arena judge vs eager")
@@ -396,12 +486,12 @@ def plot_verdicts(entries, out_dir):
     Makes the 'pixels differ but judge says OK' story explicit."""
     try:
         import matplotlib
+
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
     except Exception:
         return None
-    rows = [e for e in entries
-            if e.get("wins") is not None and e["name"] != "baseline"]
+    rows = [e for e in entries if e.get("wins") is not None and e["name"] != "baseline"]
     if not rows:
         return None
     rows.sort(key=lambda e: (e.get("winrate_a") or 0))
@@ -413,8 +503,13 @@ def plot_verdicts(entries, out_dir):
     fig, ax = plt.subplots(figsize=(9, max(3, len(rows) * 0.32)))
     ax.barh(list(y), wins, color="#188038", label="win vs eager")
     ax.barh(list(y), ties, left=wins, color="#9aa0a6", label="tie")
-    ax.barh(list(y), losses, left=[w + t for w, t in zip(wins, ties)],
-            color="#d93025", label="lose")
+    ax.barh(
+        list(y),
+        losses,
+        left=[w + t for w, t in zip(wins, ties)],
+        color="#d93025",
+        label="lose",
+    )
     ax.set_yticks(list(y))
     ax.set_yticklabels(names, fontsize=7)
     ax.set_xlabel("prompts (arena ensemble judge vs eager)")
@@ -431,6 +526,7 @@ def plot_params(front, out_dir):
     """Show which node params the frontier configs actually use."""
     try:
         import matplotlib
+
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
     except Exception:
@@ -441,12 +537,10 @@ def plot_params(front, out_dir):
         rows.append((e["name"], e["speedup"], ov))
     if not rows:
         return None
-    keys = sorted({k for _, _, ov in rows for k in ov
-                   if not k.endswith(".enable")})
+    keys = sorted({k for _, _, ov in rows for k in ov if not k.endswith(".enable")})
     if not keys:
         return None
-    fig, ax = plt.subplots(figsize=(max(8, len(keys) * 1.1),
-                                    max(3, len(rows) * 0.6)))
+    fig, ax = plt.subplots(figsize=(max(8, len(keys) * 1.1), max(3, len(rows) * 0.6)))
     ax.set_xticks(range(len(keys)))
     ax.set_xticklabels(keys, rotation=45, ha="right", fontsize=8)
     ax.set_yticks(range(len(rows)))
@@ -455,9 +549,17 @@ def plot_params(front, out_dir):
         for xi, k in enumerate(keys):
             v = ov.get(k, "")
             if v != "":
-                ax.text(xi, yi, v, ha="center", va="center", fontsize=8,
-                        bbox=dict(boxstyle="round,pad=0.3", fc="#e8f0fe",
-                                  ec="#1a73e8", lw=0.8))
+                ax.text(
+                    xi,
+                    yi,
+                    v,
+                    ha="center",
+                    va="center",
+                    fontsize=8,
+                    bbox=dict(
+                        boxstyle="round,pad=0.3", fc="#e8f0fe", ec="#1a73e8", lw=0.8
+                    ),
+                )
     ax.set_title("Frontier configs — which node parameters they use")
     ax.set_xlim(-0.5, len(keys) - 0.5)
     ax.set_ylim(-0.5, len(rows) - 0.5)
@@ -488,8 +590,10 @@ def _fmt_mode(e):
     m = e.get("mode") or {}
     if not m.get("n"):
         return "—"
-    return (f"{m.get('aligned', 0)}/{m['n']} aligned, {m.get('moved', 0)} moved, "
-            f"{m.get('replaced', 0)} replaced")
+    return (
+        f"{m.get('aligned', 0)}/{m['n']} aligned, {m.get('moved', 0)} moved, "
+        f"{m.get('replaced', 0)} replaced"
+    )
 
 
 def write_md(report, best, out_dir, meta):
@@ -501,8 +605,13 @@ def write_md(report, best, out_dir, meta):
             f"searched · **decision = arena degradation judge (fpcharts)**: a config "
             f"must pass the defect gate ({', '.join(dec['gate'])}: {dec['gate_stat']} "
             f"≤ threshold"
-            + (f" and p90 ≤ {dec['tail_mult']:g}× threshold, i.e. no strong defect "
-               f"on the worst 10 % of prompts" if dec.get("tail_mult") else "") + ") "
+            + (
+                f" and p90 ≤ {dec['tail_mult']:g}× threshold, i.e. no strong defect "
+                f"on the worst 10 % of prompts"
+                if dec.get("tail_mult")
+                else ""
+            )
+            + ") "
             f"and keep the composition (scene replaced ≤ {dec['replaced_max']:.0%} of "
             f"prompts, layout moved ≤ {dec['moved_max']:.0%}); among those the Pareto "
             f"front is speed × fpcharts quality rank (weighted rank over the defect "
@@ -510,15 +619,21 @@ def write_md(report, best, out_dir, meta):
             f"statistically tied with the best-quality one. LPIPS (≤ "
             f"{report['quality_tolerance_lpips']} was the legacy gate) and Δelo are "
             f"reported for reference. Ranking weights: "
-            + ", ".join(f"{k} {v:g}" for k, v in sorted(dec["weights"].items(),
-                                                        key=lambda kv: -kv[1])
-                        if v != 1.0) + ", others 1.\n")
+            + ", ".join(
+                f"{k} {v:g}"
+                for k, v in sorted(dec["weights"].items(), key=lambda kv: -kv[1])
+                if v != 1.0
+            )
+            + ", others 1.\n"
+        )
     else:
-        lines.append(f"Baseline: `{meta.get('baseline')}` · quality tolerance "
-                     f"LPIPS ≤ {report['quality_tolerance_lpips']} · "
-                     f"{report['n_configs']} configs searched.\n")
+        lines.append(
+            f"Baseline: `{meta.get('baseline')}` · quality tolerance "
+            f"LPIPS ≤ {report['quality_tolerance_lpips']} · "
+            f"{report['n_configs']} configs searched.\n"
+        )
     if best:
-        head = (f"**{best['name']}** — **{best['speedup']:.2f}×**")
+        head = f"**{best['name']}** — **{best['speedup']:.2f}×**"
         if best.get("quality_rank") is not None:
             head += f" at quality rank **{_fmt_rank(best)}**"
         head += f", mean LPIPS {_fmt_lpips(best)}"
@@ -528,24 +643,42 @@ def write_md(report, best, out_dir, meta):
         if dec:
             lines.append(f"Why this one: {dec['reason']}.")
             won, lost = best.get("axes_won") or [], best.get("axes_lost") or []
-            lines.append(f"Axes ranked: {best.get('axes_ranked', 0)}; best on "
-                         f"{len(won)} ({', '.join(won) or '—'}); worst on "
-                         f"{len(lost)} ({', '.join(lost) or '—'}). Comparison mode: "
-                         f"{_fmt_mode(best)}. Gate: passed.")
+            lines.append(
+                f"Axes ranked: {best.get('axes_ranked', 0)}; best on "
+                f"{len(won)} ({', '.join(won) or '—'}); worst on "
+                f"{len(lost)} ({', '.join(lost) or '—'}). Comparison mode: "
+                f"{_fmt_mode(best)}. Gate: passed."
+            )
             lines.append("")
-        lines += ["Reproduce (arena `--set`):", "", "```",
-                  best.get("config", "") or "(baseline config)", "```", ""]
+        lines += [
+            "Reproduce (arena `--set`):",
+            "",
+            "```",
+            best.get("config", "") or "(baseline config)",
+            "```",
+            "",
+        ]
     else:
-        lines += ["## Recommended config", "",
-                  ("No faithful config passed the defect gate — search more "
-                   "conservative settings." if dec else
-                   "No config met the quality tolerance — loosen `--tol` or search "
-                   "more conservative settings."), ""]
+        lines += [
+            "## Recommended config",
+            "",
+            (
+                "No faithful config passed the defect gate — search more "
+                "conservative settings."
+                if dec
+                else "No config met the quality tolerance — loosen `--tol` or search "
+                "more conservative settings."
+            ),
+            "",
+        ]
     if dec:
-        lines += ["## Frontier (speed × arena quality rank), faithful configs", "",
-                  "| config | speedup | quality rank [95 % CI] | best on / worst on "
-                  "(axes) | mode | mean_lpips | Δelo | --set |",
-                  "|---|---|---|---|---|---|---|---|"]
+        lines += [
+            "## Frontier (speed × arena quality rank), faithful configs",
+            "",
+            "| config | speedup | quality rank [95 % CI] | best on / worst on "
+            "(axes) | mode | mean_lpips | Δelo | --set |",
+            "|---|---|---|---|---|---|---|---|",
+        ]
         for e in report["frontier"]:
             star = " ⭐" if best and e["name"] == best["name"] else ""
             lines.append(
@@ -553,53 +686,80 @@ def write_md(report, best, out_dir, meta):
                 f"{len(e.get('axes_won') or [])} / {len(e.get('axes_lost') or [])} "
                 f"of {e.get('axes_ranked', 0)} | {_fmt_mode(e)} | {_fmt_lpips(e)} | "
                 f"{e['elo_delta'] if e.get('elo_delta') is not None else '—'} | "
-                f"`{(e['config'] or '')[:80]}` |")
+                f"`{(e['config'] or '')[:80]}` |"
+            )
         if report.get("creative"):
-            lines += ["", "## Re-deciding configs (creative points, judged separately)",
-                      "", "These change the composition on too many prompts to be "
-                      "compared as a degradation of the baseline; their LPIPS is not a "
-                      "quality measure. Only structure and the learned axes apply; "
-                      "check `arena adherence` before offering them.", "",
-                      "| config | speedup | quality rank | mode | Δelo | --set |",
-                      "|---|---|---|---|---|---|"]
+            lines += [
+                "",
+                "## Re-deciding configs (creative points, judged separately)",
+                "",
+                "These change the composition on too many prompts to be "
+                "compared as a degradation of the baseline; their LPIPS is not a "
+                "quality measure. Only structure and the learned axes apply; "
+                "check `arena adherence` before offering them.",
+                "",
+                "| config | speedup | quality rank | mode | Δelo | --set |",
+                "|---|---|---|---|---|---|",
+            ]
             for e in sorted(report["creative"], key=lambda e: -e["speedup"]):
                 lines.append(
                     f"| {e['name']} | {e['speedup']:.2f}× | {_fmt_rank(e)} | "
                     f"{_fmt_mode(e)} | "
                     f"{e['elo_delta'] if e.get('elo_delta') is not None else '—'} | "
-                    f"`{(e['config'] or '')[:80]}` |")
+                    f"`{(e['config'] or '')[:80]}` |"
+                )
         if report.get("rejected_by_gate"):
-            lines += ["", "## Rejected by the defect gate", "",
-                      "| config | speedup | failing axes | mean_lpips | Δelo |",
-                      "|---|---|---|---|---|"]
+            lines += [
+                "",
+                "## Rejected by the defect gate",
+                "",
+                "| config | speedup | failing axes | mean_lpips | Δelo |",
+                "|---|---|---|---|---|",
+            ]
             for e in sorted(report["rejected_by_gate"], key=lambda e: -e["speedup"]):
                 lines.append(
                     f"| {e['name']} | {e['speedup']:.2f}× | "
                     f"{'; '.join(e.get('gate_fails') or [])} | {_fmt_lpips(e)} | "
-                    f"{e['elo_delta'] if e.get('elo_delta') is not None else '—'} |")
+                    f"{e['elo_delta'] if e.get('elo_delta') is not None else '—'} |"
+                )
     else:
-        lines += ["## Frontier (speed × quality)", "",
-                  "| config | speedup | mean_lpips | Δelo | --set |",
-                  "|---|---|---|---|---|"]
+        lines += [
+            "## Frontier (speed × quality)",
+            "",
+            "| config | speedup | mean_lpips | Δelo | --set |",
+            "|---|---|---|---|---|",
+        ]
         for e in report["frontier"]:
             star = " ⭐" if best and e["name"] == best["name"] else ""
-            lines.append(f"| {e['name']}{star} | {e['speedup']:.2f}× | "
-                         f"{_fmt_lpips(e)} | "
-                         f"{e['elo_delta'] if e.get('elo_delta') is not None else '—'} | "
-                         f"`{(e['config'] or '')[:80]}` |")
+            lines.append(
+                f"| {e['name']}{star} | {e['speedup']:.2f}× | "
+                f"{_fmt_lpips(e)} | "
+                f"{e['elo_delta'] if e.get('elo_delta') is not None else '—'} | "
+                f"`{(e['config'] or '')[:80]}` |"
+            )
     if report.get("not_shown"):
         ns = report["not_shown"]
-        lines += ["", f"*{len(ns)} other configs were measured and are dominated, no-ops "
-                  f"or gate failures; they are kept out of the charts and workflows/ to keep "
-                  f"the report readable (all data in `report.json`): "
-                  + ", ".join(ns) + ".*"]
-    lines += ["", "![frontier](frontier.png)", "", "![params](params.png)", "",
-              "## Files", "- How to read this folder: `tools/READING_THE_AGENT_REPORT.md` (ComfyUI-Qlip); the arena's "
-              "pages and every metric: qlip-arena `docs/READING_THE_REPORT.md`, formulas `docs/METRICS.md`",
-              "- `report.json` — machine-readable full result",
-              "- `frontier.png`, `params.png` — charts",
-              "- `best_workflow.json` — the winning config as a ready-to-run "
-              "ComfyUI API workflow (import & queue directly)", ""]
+        lines += [
+            "",
+            f"*{len(ns)} other configs were measured and are dominated, no-ops "
+            f"or gate failures; they are kept out of the charts and workflows/ to keep "
+            f"the report readable (all data in `report.json`): " + ", ".join(ns) + ".*",
+        ]
+    lines += [
+        "",
+        "![frontier](frontier.png)",
+        "",
+        "![params](params.png)",
+        "",
+        "## Files",
+        "- How to read this folder: `tools/READING_THE_AGENT_REPORT.md` (ComfyUI-Qlip); the arena's "
+        "pages and every metric: qlip-arena `docs/READING_THE_REPORT.md`, formulas `docs/METRICS.md`",
+        "- `report.json` — machine-readable full result",
+        "- `frontier.png`, `params.png` — charts",
+        "- `best_workflow.json` — the winning config as a ready-to-run "
+        "ComfyUI API workflow (import & queue directly)",
+        "",
+    ]
     path = os.path.join(out_dir, "REPORT.md")
     open(path, "w").write("\n".join(lines))
     return path
@@ -615,7 +775,7 @@ def _apply_overrides(wf, config_str):
         if not isinstance(node, dict) or "inputs" not in node:
             continue
         try:
-            parsed = json.loads(val)      # true/0.5/"str", like arena's --set
+            parsed = json.loads(val)  # true/0.5/"str", like arena's --set
         except Exception:
             parsed = val
         node["inputs"][pin] = parsed
@@ -644,6 +804,7 @@ def write_workflow_for(entry, workflow_path, out_path):
 # not store by name; we take it from a live /object_info dump when available,
 # and fall back to leaving the widget untouched (never corrupt the graph).
 
+
 def _load_object_info(oinfo):
     """Return the /object_info dict from a path or URL, or None."""
     if not oinfo:
@@ -651,6 +812,7 @@ def _load_object_info(oinfo):
     try:
         if oinfo.startswith("http"):
             import urllib.request
+
             with urllib.request.urlopen(oinfo, timeout=15) as r:
                 return json.load(r)
         return json.load(open(oinfo))
@@ -667,8 +829,20 @@ def _widget_input_order(object_info, class_type):
     spec = (object_info or {}).get(class_type, {})
     inp = spec.get("input", {})
     order = []
-    LINKY = {"MODEL", "LATENT", "CONDITIONING", "VAE", "CLIP", "IMAGE",
-             "SAMPLER", "SIGMAS", "GUIDER", "NOISE", "AUDIO", "VIDEO"}
+    LINKY = {
+        "MODEL",
+        "LATENT",
+        "CONDITIONING",
+        "VAE",
+        "CLIP",
+        "IMAGE",
+        "SAMPLER",
+        "SIGMAS",
+        "GUIDER",
+        "NOISE",
+        "AUDIO",
+        "VIDEO",
+    }
     for grp in ("required", "optional"):
         for name, spec_v in inp.get(grp, {}).items():
             t = spec_v[0] if isinstance(spec_v, (list, tuple)) and spec_v else spec_v
@@ -702,7 +876,7 @@ def _apply_overrides_ui(ui_wf, config_str, object_info):
         order = _widget_input_order(object_info, node.get("type"))
         wv = node["widgets_values"]
         if pin in order and isinstance(wv, list) and order.index(pin) < len(wv):
-            wv[order.index(pin)] = parsed          # name-mapped slot (robust)
+            wv[order.index(pin)] = parsed  # name-mapped slot (robust)
         # else: unknown widget order -> leave untouched rather than guess
     return ui_wf
 
@@ -715,15 +889,16 @@ def write_ui_workflow_for(entry, ui_workflow_path, object_info, out_path):
         ui = json.load(open(ui_workflow_path))
     except Exception:
         return None
-    if "nodes" not in ui:            # not a UI graph — skip quietly
+    if "nodes" not in ui:  # not a UI graph — skip quietly
         return None
     _apply_overrides_ui(ui, entry.get("config", ""), object_info)
     json.dump(ui, open(out_path, "w"), indent=2)
     return out_path
 
 
-def write_frontier_workflows(front, best, workflow_path, out_dir,
-                             ui_workflow_path=None, object_info=None):
+def write_frontier_workflows(
+    front, best, workflow_path, out_dir, ui_workflow_path=None, object_info=None
+):
     """Write best_workflow.json AND one workflow per frontier point (workflows/),
     so the user can pick ANY operating point, not just the recommended best.
     When a UI-format source workflow is given, ALSO write *_ui.json siblings
@@ -738,145 +913,235 @@ def write_frontier_workflows(front, best, workflow_path, out_dir,
         return p
 
     if best:
-        p = _pair(best, os.path.join(out_dir, "best_workflow.json"),
-                  os.path.join(out_dir, "best_workflow_ui.json"))
+        p = _pair(
+            best,
+            os.path.join(out_dir, "best_workflow.json"),
+            os.path.join(out_dir, "best_workflow_ui.json"),
+        )
         if p:
             written["best"] = p
     wf_dir = os.path.join(out_dir, "workflows")
     os.makedirs(wf_dir, exist_ok=True)
     for e in front:
         safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in e["name"])
-        p = _pair(e, os.path.join(wf_dir, safe + ".json"),
-                  os.path.join(wf_dir, safe + "_ui.json"))
+        p = _pair(
+            e,
+            os.path.join(wf_dir, safe + ".json"),
+            os.path.join(wf_dir, safe + "_ui.json"),
+        )
         if p:
             written[e["name"]] = p
     return written
 
 
 def main():
-    ap = argparse.ArgumentParser(description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     ap.add_argument("--results", required=True, help="dir of arena export JSONs")
     ap.add_argument("--baseline", required=True, help="baseline run name (opponent)")
     ap.add_argument("--tol", type=float, default=0.35, help="max mean_lpips to accept")
     ap.add_argument("--out", required=True, help="output dir for report.json/png/md")
     ap.add_argument("--model", default="model")
     ap.add_argument("--gpu", default="")
-    ap.add_argument("--workflow", default=None,
-                    help="source API-workflow; best config's --set is applied to it "
-                         "and written as best_workflow.json (ready to queue)")
-    ap.add_argument("--ui-workflow", default=None,
-                    help="source UI-format workflow (the {nodes,links} graph). When "
-                         "given, ALSO writes *_ui.json siblings that open in the ComfyUI "
-                         "canvas, with the same --set baked in.")
-    ap.add_argument("--object-info", default=None,
-                    help="path to a /object_info dump OR its URL (e.g. "
-                         "http://127.0.0.1:8188/object_info). Used to map node.pin -> the "
-                         "correct widgets_values slot when writing the UI workflow.")
-    ap.add_argument("--configs", default=None,
-                    help="configs.jsonl written by the search runner: {name, set} per "
-                         "line. Supplies the --set overrides (arena export omits them) "
-                         "so best_workflow.json and the frontier's --set column work.")
-    ap.add_argument("--point", default=None,
-                    help="also write a ready-to-run workflow for THIS config name "
-                         "(any point, not just best) → out/point_<name>.json")
-    ap.add_argument("--fpcharts", default=None,
-                    help="fpcharts_data.json from `arena fpcharts` over the searched "
-                         "configs. When given, the arena's degradation judge DECIDES: "
-                         "gate on the defect tails, faithful vs re-deciding mode, "
-                         "Pareto on speed x quality rank, recommendation = fastest "
-                         "point statistically tied with the best-quality one. LPIPS "
-                         "and Elo become reference columns.")
-    ap.add_argument("--gate-max", action="append", default=None,
-                    help="defect-gate limit 'axis=value' or 'axis' (= the arena's "
-                         "noticeability threshold); repeatable. Default: "
-                         + " ".join(DEFAULT_GATE))
-    ap.add_argument("--gate-stat", default="median", choices=("median", "mean", "p90"),
-                    help="statistic of the per-prompt values checked against the "
-                         "limit (typical prompt); default median")
-    ap.add_argument("--gate-tail", type=float, default=2.0,
-                    help="ALSO require p90 <= this x limit (the arena's 'strong' band "
-                         "is 2 x threshold: no strong defect on the worst 10 %% of "
-                         "prompts). 0 disables the tail check.")
-    ap.add_argument("--replaced-max", type=float, default=0.25,
-                    help="share of prompts with the scene replaced above which a "
-                         "config is a re-deciding (creative) point")
-    ap.add_argument("--moved-max", type=float, default=0.5,
-                    help="share of prompts with the layout moved above which a "
-                         "config is a re-deciding (creative) point")
-    ap.add_argument("--report-set", default="frontier", choices=("frontier", "all"),
-                    help="which configs the charts, collage list and workflows/ cover: "
-                         "'frontier' (default) = the faithful Pareto front + the creative "
-                         "points + the recommended one; dominated / no-op / gate-failed "
-                         "configs are counted and listed by name only (full data stays in "
-                         "report.json). 'all' = every config on every chart (the old "
-                         "behaviour; unreadable beyond ~10 configs).")
-    ap.add_argument("--rank-slack", type=float, default=1.0,
-                    help="if no faster config is tied with the quality leader, "
-                         "accept the fastest within this many rank units (compromise)")
+    ap.add_argument(
+        "--workflow",
+        default=None,
+        help="source API-workflow; best config's --set is applied to it "
+        "and written as best_workflow.json (ready to queue)",
+    )
+    ap.add_argument(
+        "--ui-workflow",
+        default=None,
+        help="source UI-format workflow (the {nodes,links} graph). When "
+        "given, ALSO writes *_ui.json siblings that open in the ComfyUI "
+        "canvas, with the same --set baked in.",
+    )
+    ap.add_argument(
+        "--object-info",
+        default=None,
+        help="path to a /object_info dump OR its URL (e.g. "
+        "http://127.0.0.1:8188/object_info). Used to map node.pin -> the "
+        "correct widgets_values slot when writing the UI workflow.",
+    )
+    ap.add_argument(
+        "--configs",
+        default=None,
+        help="configs.jsonl written by the search runner: {name, set} per "
+        "line. Supplies the --set overrides (arena export omits them) "
+        "so best_workflow.json and the frontier's --set column work.",
+    )
+    ap.add_argument(
+        "--point",
+        default=None,
+        help="also write a ready-to-run workflow for THIS config name "
+        "(any point, not just best) → out/point_<name>.json",
+    )
+    ap.add_argument(
+        "--fpcharts",
+        default=None,
+        help="fpcharts_data.json from `arena fpcharts` over the searched "
+        "configs. When given, the arena's degradation judge DECIDES: "
+        "gate on the defect tails, faithful vs re-deciding mode, "
+        "Pareto on speed x quality rank, recommendation = fastest "
+        "point statistically tied with the best-quality one. LPIPS "
+        "and Elo become reference columns.",
+    )
+    ap.add_argument(
+        "--gate-max",
+        action="append",
+        default=None,
+        help="defect-gate limit 'axis=value' or 'axis' (= the arena's "
+        "noticeability threshold); repeatable. Default: " + " ".join(DEFAULT_GATE),
+    )
+    ap.add_argument(
+        "--gate-stat",
+        default="median",
+        choices=("median", "mean", "p90"),
+        help="statistic of the per-prompt values checked against the "
+        "limit (typical prompt); default median",
+    )
+    ap.add_argument(
+        "--gate-tail",
+        type=float,
+        default=2.0,
+        help="ALSO require p90 <= this x limit (the arena's 'strong' band "
+        "is 2 x threshold: no strong defect on the worst 10 %% of "
+        "prompts). 0 disables the tail check.",
+    )
+    ap.add_argument(
+        "--replaced-max",
+        type=float,
+        default=0.25,
+        help="share of prompts with the scene replaced above which a "
+        "config is a re-deciding (creative) point",
+    )
+    ap.add_argument(
+        "--moved-max",
+        type=float,
+        default=0.5,
+        help="share of prompts with the layout moved above which a "
+        "config is a re-deciding (creative) point",
+    )
+    ap.add_argument(
+        "--report-set",
+        default="frontier",
+        choices=("frontier", "all"),
+        help="which configs the charts, collage list and workflows/ cover: "
+        "'frontier' (default) = the faithful Pareto front + the creative "
+        "points + the recommended one; dominated / no-op / gate-failed "
+        "configs are counted and listed by name only (full data stays in "
+        "report.json). 'all' = every config on every chart (the old "
+        "behaviour; unreadable beyond ~10 configs).",
+    )
+    ap.add_argument(
+        "--rank-slack",
+        type=float,
+        default=1.0,
+        help="if no faster config is tied with the quality leader, "
+        "accept the fastest within this many rank units (compromise)",
+    )
     args = ap.parse_args()
 
     os.makedirs(args.out, exist_ok=True)
     config_map = load_config_map(args.configs)
     entries = load_entries(args.results, args.baseline, config_map)
     if not entries:
-        raise SystemExit(f"no arena export JSONs found in {args.results} "
-                         f"(opponent={args.baseline}) — run judge+export first")
-    meta = {"model": args.model, "gpu": args.gpu, "baseline": args.baseline,
-            "qkey": "mean_lpips", "decision": None}
+        raise SystemExit(
+            f"no arena export JSONs found in {args.results} "
+            f"(opponent={args.baseline}) — run judge+export first"
+        )
+    meta = {
+        "model": args.model,
+        "gpu": args.gpu,
+        "baseline": args.baseline,
+        "qkey": "mean_lpips",
+        "decision": None,
+    }
     if args.fpcharts:
         doc, summary = load_fpcharts(args.fpcharts)
         if not summary:
-            raise SystemExit(f"{args.fpcharts} has no 'summary' block — regenerate "
-                             f"it with a qlip-arena that exports the summary "
-                             f"(arena fpcharts ...)")
+            raise SystemExit(
+                f"{args.fpcharts} has no 'summary' block — regenerate "
+                f"it with a qlip-arena that exports the summary "
+                f"(arena fpcharts ...)"
+            )
         gate = args.gate_max or DEFAULT_GATE
-        attach_fpcharts(entries, doc, summary, gate, args.gate_stat,
-                        args.replaced_max, args.moved_max, args.gate_tail)
+        attach_fpcharts(
+            entries,
+            doc,
+            summary,
+            gate,
+            args.gate_stat,
+            args.replaced_max,
+            args.moved_max,
+            args.gate_tail,
+        )
         unscored = [e["name"] for e in entries if e.get("fp_class") is None]
         if unscored:
-            print(f"WARNING: not in fpcharts (left out of the decision): "
-                  f"{', '.join(unscored)}")
+            print(
+                f"WARNING: not in fpcharts (left out of the decision): "
+                f"{', '.join(unscored)}"
+            )
         faithful = [e for e in entries if e.get("fp_class") == "faithful"]
         front = pareto_front(faithful, qkey="quality_rank")
         best, reason = recommend_fp(front, args.rank_slack)
         legacy = recommend(pareto_front(entries), args.tol)
         if legacy and (not best or legacy["name"] != best["name"]):
-            why = (legacy.get("gate_fails") or
-                   (["re-decides the composition: " + _fmt_mode(legacy)]
-                    if legacy.get("re_deciding") else ["dominated on quality rank"]))
-            reason += (f". The LPIPS-only rule would have picked {legacy['name']} "
-                       f"({legacy['speedup']:.2f}x, LPIPS {_fmt_lpips(legacy)}); "
-                       f"disqualified by: {'; '.join(why)}")
-        meta.update(qkey="quality_rank",
-                    decision={"gate": gate, "gate_stat": args.gate_stat,
-                              "replaced_max": args.replaced_max,
-                              "moved_max": args.moved_max,
-                              "rank_slack": args.rank_slack,
-                              "tail_mult": args.gate_tail,
-                              # only the axes measured on this modality
-                              "weights": {k: v for k, v in
-                                          summary.get("weights", {}).items()
-                                          if k == "pickscore_wr"
-                                          or k in doc.get("data", {})},
-                              "n_prompts": summary.get("n_prompts"),
-                              "reason": reason})
+            why = legacy.get("gate_fails") or (
+                ["re-decides the composition: " + _fmt_mode(legacy)]
+                if legacy.get("re_deciding")
+                else ["dominated on quality rank"]
+            )
+            reason += (
+                f". The LPIPS-only rule would have picked {legacy['name']} "
+                f"({legacy['speedup']:.2f}x, LPIPS {_fmt_lpips(legacy)}); "
+                f"disqualified by: {'; '.join(why)}"
+            )
+        meta.update(
+            qkey="quality_rank",
+            decision={
+                "gate": gate,
+                "gate_stat": args.gate_stat,
+                "replaced_max": args.replaced_max,
+                "moved_max": args.moved_max,
+                "rank_slack": args.rank_slack,
+                "tail_mult": args.gate_tail,
+                # only the axes measured on this modality
+                "weights": {
+                    k: v
+                    for k, v in summary.get("weights", {}).items()
+                    if k == "pickscore_wr" or k in doc.get("data", {})
+                },
+                "n_prompts": summary.get("n_prompts"),
+                "reason": reason,
+            },
+        )
     else:
         front = pareto_front(entries)
         best = recommend(front, args.tol)
 
     jpath, report = write_json(entries, front, best, args.tol, args.out, meta)
-    fpath = plot_frontier(entries if args.report_set == "all" else
-                          [e for e in entries if e.get("fp_class") != "faithful"
-                           or e in front], front, best, args.out)
+    fpath = plot_frontier(
+        entries
+        if args.report_set == "all"
+        else [e for e in entries if e.get("fp_class") != "faithful" or e in front],
+        front,
+        best,
+        args.out,
+    )
     ppath = plot_params(front, args.out)
     if args.report_set == "frontier":
-        keep = {e["name"] for e in front} | {e["name"] for e in report.get("creative", [])}
+        keep = {e["name"] for e in front} | {
+            e["name"] for e in report.get("creative", [])
+        }
         if best:
             keep.add(best["name"])
         shown = [e for e in entries if e["name"] in keep]
         report["report_set"] = sorted(keep)
-        report["not_shown"] = sorted(e["name"] for e in entries if e["name"] not in keep)
+        report["not_shown"] = sorted(
+            e["name"] for e in entries if e["name"] not in keep
+        )
         json.dump(report, open(jpath, "w"), indent=2)
     else:
         shown = entries
@@ -885,10 +1150,14 @@ def main():
     # best_workflow.json + one workflow per frontier point (workflows/);
     # + *_ui.json siblings when a UI-format source workflow is provided.
     object_info = _load_object_info(args.object_info)
-    wf_written = write_frontier_workflows(front + report.get("creative", []), best,
-                                          args.workflow, args.out,
-                                          ui_workflow_path=args.ui_workflow,
-                                          object_info=object_info)
+    wf_written = write_frontier_workflows(
+        front + report.get("creative", []),
+        best,
+        args.workflow,
+        args.out,
+        ui_workflow_path=args.ui_workflow,
+        object_info=object_info,
+    )
     wpath = wf_written.get("best")
     # optional: a workflow for a user-requested point (any config, not just frontier)
     ptpath = None
@@ -896,25 +1165,41 @@ def main():
         pe = next((e for e in entries if e["name"] == args.point), None)
         if pe:
             ptpath = write_workflow_for(
-                pe, args.workflow,
-                os.path.join(args.out, "point_%s.json" % args.point))
+                pe, args.workflow, os.path.join(args.out, "point_%s.json" % args.point)
+            )
             if args.ui_workflow:
                 write_ui_workflow_for(
-                    pe, args.ui_workflow, object_info,
-                    os.path.join(args.out, "point_%s_ui.json" % args.point))
+                    pe,
+                    args.ui_workflow,
+                    object_info,
+                    os.path.join(args.out, "point_%s_ui.json" % args.point),
+                )
 
-    print(f"configs: {len(entries)} | frontier: {len(front)}"
-          + (f" | creative: {len(report['creative'])} | rejected by gate: "
-             f"{len(report['rejected_by_gate'])}" if meta.get("decision") else ""))
+    print(
+        f"configs: {len(entries)} | frontier: {len(front)}"
+        + (
+            f" | creative: {len(report['creative'])} | rejected by gate: "
+            f"{len(report['rejected_by_gate'])}"
+            if meta.get("decision")
+            else ""
+        )
+    )
     if best:
-        print(f"BEST: {best['name']}  {best['speedup']:.2f}x  "
-              f"LPIPS {_fmt_lpips(best)}"
-              + (f"  quality rank {_fmt_rank(best)}"
-                 if best.get("quality_rank") is not None else ""))
+        print(
+            f"BEST: {best['name']}  {best['speedup']:.2f}x  "
+            f"LPIPS {_fmt_lpips(best)}"
+            + (
+                f"  quality rank {_fmt_rank(best)}"
+                if best.get("quality_rank") is not None
+                else ""
+            )
+        )
         if meta.get("decision"):
             print(f"      {meta['decision']['reason']}")
     else:
-        print("BEST: none" + ("" if meta.get("decision") else f" within tol={args.tol}"))
+        print(
+            "BEST: none" + ("" if meta.get("decision") else f" within tol={args.tol}")
+        )
     print(f"wrote: {jpath}")
     print(f"       {mpath}")
     if fpath:
@@ -927,8 +1212,10 @@ def main():
         print(f"       {wpath}  <- best workflow (ready to queue)")
     n_front_wf = len([k for k in wf_written if k != "best"])
     if n_front_wf:
-        print(f"       {os.path.join(args.out, 'workflows')}/  "
-              f"<- {n_front_wf} frontier-point workflows (pick any point)")
+        print(
+            f"       {os.path.join(args.out, 'workflows')}/  "
+            f"<- {n_front_wf} frontier-point workflows (pick any point)"
+        )
     if ptpath:
         print(f"       {ptpath}  <- requested point '{args.point}'")
     print("QLIP_REPORT_DONE")

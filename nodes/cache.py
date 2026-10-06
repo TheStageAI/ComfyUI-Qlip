@@ -11,15 +11,14 @@ warns and effectively no-ops.
 """
 
 import torch
+from qlip.inference.step_cache import BlockCacheController, CacheController
 
 from .engine_loader import _validate_diffusion_model_input
-from ..utils.diffusion_cache import CacheController
-from ..utils.block_cache import BlockCacheController
 
 # the controller from the most recent Qlip Cache node, so the Report node can
 # read stats without a model input (model.clone() would not carry it anyway)
 _LAST_CTRL = None
-_BLOCK_CTRL = None   # active block-mode controller (wraps the SHARED diffusion model)
+_BLOCK_CTRL = None  # active block-mode controller (wraps the SHARED diffusion model)
 
 
 class QlipCache:
@@ -30,56 +29,113 @@ class QlipCache:
     def INPUT_TYPES(s):
         return {
             "required": {
-                "model": ("MODEL", {"tooltip": "Diffusion model (many-step "
-                          "configs benefit; distilled 4–8 step models barely)."}),
+                "model": (
+                    "MODEL",
+                    {
+                        "tooltip": "Diffusion model (many-step "
+                        "configs benefit; distilled 4–8 step models barely)."
+                    },
+                ),
                 "enable": ("BOOLEAN", {"default": True}),
-                "threshold": ("FLOAT", {"default": 0.15, "min": 0.0, "max": 1.0,
-                              "step": 0.01, "tooltip": "step mode: accumulated-"
-                              "error budget before a forced recompute. block "
-                              "mode: rel-L1 hidden-state diff at the Fn "
-                              "boundary below which the middle blocks are "
-                              "skipped (0.05–0.1 typical). Higher = more skips "
-                              "= faster & riskier."}),
-                "mode": (["step", "block"], {"default": "step", "tooltip":
-                         "step = skip whole denoising steps (wrapper around "
-                         "the model call; works over ANY engine). block = "
-                         "DBCache-style: first fn_blocks always compute, "
-                         "middle blocks are skipped via a cached residual, "
-                         "last bn_blocks refine — possible because qlip "
-                         "compiles each block as its own engine. block mode "
-                         "also helps few-step distilled models."}),
+                "threshold": (
+                    "FLOAT",
+                    {
+                        "default": 0.15,
+                        "min": 0.0,
+                        "max": 1.0,
+                        "step": 0.01,
+                        "tooltip": "step mode: accumulated-"
+                        "error budget before a forced recompute. block "
+                        "mode: rel-L1 hidden-state diff at the Fn "
+                        "boundary below which the middle blocks are "
+                        "skipped (0.05–0.1 typical). Higher = more skips "
+                        "= faster & riskier.",
+                    },
+                ),
+                "mode": (
+                    ["step", "block"],
+                    {
+                        "default": "step",
+                        "tooltip": "step = skip whole denoising steps (wrapper around "
+                        "the model call; works over ANY engine). block = "
+                        "DBCache-style: first fn_blocks always compute, "
+                        "middle blocks are skipped via a cached residual, "
+                        "last bn_blocks refine — possible because qlip "
+                        "compiles each block as its own engine. block mode "
+                        "also helps few-step distilled models.",
+                    },
+                ),
             },
             "optional": {
-                "method": (["easycache", "taylor", "hermite"],
-                           {"default": "easycache", "tooltip":
-                            "How skipped steps are predicted. easycache = reuse "
-                            "the last residual — cheap, robust, and in our "
-                            "measurements the best quality/speed on every model "
-                            "so far (Krea-2, MiniMax-H3, Ideogram-4): the "
-                            "DEFAULT, start here. taylor = TaylorSeer, "
-                            "extrapolate output from history (can overshoot). "
-                            "hermite = HiCache, damped extrapolation: order 1 "
-                            "behaves like easycache; order >= 2 on many-step "
-                            "models tends to re-decide the composition and add "
-                            "a translucent mesh (measured on Ideogram-4: scene "
-                            "replaced on 12-14/16 prompts) — try only if "
-                            "easycache's texture tail fails the gate."}),
-                "order": ("INT", {"default": 2, "min": 1, "max": 4, "tooltip":
-                          "Extrapolation order for taylor/hermite. 2 is a good "
-                          "default; higher = more history tensors cached."}),
-                "warmup_steps": ("INT", {"default": 4, "min": 0, "max": 20,
-                                 "tooltip": "First steps always computed — they "
-                                 "set composition/background. Do not lower much."}),
-                "max_consecutive_skips": ("INT", {"default": 3, "min": 1, "max": 10,
-                                          "tooltip": "Hard cap on skips in a row "
-                                          "so error can't compound unbounded."}),
-                "fn_blocks": ("INT", {"default": 8, "min": 1, "max": 64,
-                              "tooltip": "block mode: first N blocks that "
-                              "ALWAYS compute — their output is the probe "
-                              "that decides skipping."}),
-                "bn_blocks": ("INT", {"default": 0, "min": 0, "max": 64,
-                              "tooltip": "block mode: last N blocks that "
-                              "always compute (refinement tail)."}),
+                "method": (
+                    ["easycache", "taylor", "hermite"],
+                    {
+                        "default": "easycache",
+                        "tooltip": "How skipped steps are predicted. easycache = reuse "
+                        "the last residual — cheap, robust, and in our "
+                        "measurements the best quality/speed on every model "
+                        "so far (Krea-2, MiniMax-H3, Ideogram-4): the "
+                        "DEFAULT, start here. taylor = TaylorSeer, "
+                        "extrapolate output from history (can overshoot). "
+                        "hermite = HiCache, damped extrapolation: order 1 "
+                        "behaves like easycache; order >= 2 on many-step "
+                        "models tends to re-decide the composition and add "
+                        "a translucent mesh (measured on Ideogram-4: scene "
+                        "replaced on 12-14/16 prompts) — try only if "
+                        "easycache's texture tail fails the gate.",
+                    },
+                ),
+                "order": (
+                    "INT",
+                    {
+                        "default": 2,
+                        "min": 1,
+                        "max": 4,
+                        "tooltip": "Extrapolation order for taylor/hermite. 2 is a good "
+                        "default; higher = more history tensors cached.",
+                    },
+                ),
+                "warmup_steps": (
+                    "INT",
+                    {
+                        "default": 4,
+                        "min": 0,
+                        "max": 20,
+                        "tooltip": "First steps always computed — they "
+                        "set composition/background. Do not lower much.",
+                    },
+                ),
+                "max_consecutive_skips": (
+                    "INT",
+                    {
+                        "default": 3,
+                        "min": 1,
+                        "max": 10,
+                        "tooltip": "Hard cap on skips in a row "
+                        "so error can't compound unbounded.",
+                    },
+                ),
+                "fn_blocks": (
+                    "INT",
+                    {
+                        "default": 8,
+                        "min": 1,
+                        "max": 64,
+                        "tooltip": "block mode: first N blocks that "
+                        "ALWAYS compute — their output is the probe "
+                        "that decides skipping.",
+                    },
+                ),
+                "bn_blocks": (
+                    "INT",
+                    {
+                        "default": 0,
+                        "min": 0,
+                        "max": 64,
+                        "tooltip": "block mode: last N blocks that "
+                        "always compute (refinement tail).",
+                    },
+                ),
             },
         }
 
@@ -92,9 +148,19 @@ class QlipCache:
     def IS_CHANGED(cls, **kwargs):
         return float("nan")
 
-    def apply(self, model, enable=True, threshold=0.15, mode="step",
-              method="hermite", order=2, warmup_steps=4,
-              max_consecutive_skips=3, fn_blocks=8, bn_blocks=0):
+    def apply(
+        self,
+        model,
+        enable=True,
+        threshold=0.15,
+        mode="step",
+        method="hermite",
+        order=2,
+        warmup_steps=4,
+        max_consecutive_skips=3,
+        fn_blocks=8,
+        bn_blocks=0,
+    ):
         _validate_diffusion_model_input(model, "QlipCache")
         global _LAST_CTRL, _BLOCK_CTRL
         patched = model.clone()
@@ -114,10 +180,14 @@ class QlipCache:
 
         if mode == "block":
             ctrl = BlockCacheController(
-                threshold=threshold, fn_blocks=fn_blocks, bn_blocks=bn_blocks,
+                threshold=threshold,
+                fn_blocks=fn_blocks,
+                bn_blocks=bn_blocks,
                 warmup_steps=warmup_steps,
                 max_consecutive_skips=max_consecutive_skips,
-                method=method, order=order)
+                method=method,
+                order=order,
+            )
             dm = patched.model.diffusion_model
             info = ctrl.install(dm)
             _BLOCK_CTRL = ctrl
@@ -126,24 +196,31 @@ class QlipCache:
             def reset_wrapper(executor, *a, **kw):
                 ctrl.reset()
                 return executor(*a, **kw)
+
             try:
                 import comfy.patcher_extension as pe
-                patched.add_wrapper(pe.WrappersMP.SAMPLER_SAMPLE,
-                                    reset_wrapper)
+
+                patched.add_wrapper(pe.WrappersMP.SAMPLER_SAMPLE, reset_wrapper)
             except Exception:
                 pass
 
-            print(f"[QlipCache] block mode: {info['blocks']} blocks "
-                  f"({info.get('container')}), "
-                  f"Fn={info['fn']} Bn={info['bn']} "
-                  f"middle={info['middle']} threshold={threshold} "
-                  f"predictor={method}. Works over per-block qlip engines "
-                  f"and eager alike; helps few-step models too.")
+            print(
+                f"[QlipCache] block mode: {info['blocks']} blocks "
+                f"({info.get('container')}), "
+                f"Fn={info['fn']} Bn={info['bn']} "
+                f"middle={info['middle']} threshold={threshold} "
+                f"predictor={method}. Works over per-block qlip engines "
+                f"and eager alike; helps few-step models too."
+            )
             return (patched,)
 
-        ctrl = CacheController(warmup_steps=warmup_steps,
-                               max_consecutive_skips=max_consecutive_skips,
-                               threshold=threshold, method=method, order=order)
+        ctrl = CacheController(
+            warmup_steps=warmup_steps,
+            max_consecutive_skips=max_consecutive_skips,
+            threshold=threshold,
+            method=method,
+            order=order,
+        )
         _LAST_CTRL = ctrl
 
         prev_wrapper = patched.model_options.get("model_function_wrapper")
@@ -163,10 +240,16 @@ class QlipCache:
             if prev_wrapper is not None:
                 _base = apply_model
 
-                def apply_model(xx, tt, **cc):   # noqa: F811 — chained inner
-                    return prev_wrapper(_base, {
-                        "input": xx, "timestep": tt, "c": cc,
-                        "cond_or_uncond": branches})
+                def apply_model(xx, tt, **cc):  # noqa: F811 — chained inner
+                    return prev_wrapper(
+                        _base,
+                        {
+                            "input": xx,
+                            "timestep": tt,
+                            "c": cc,
+                            "cond_or_uncond": branches,
+                        },
+                    )
 
             # When cond and uncond are batched into ONE call (len>1), skipping
             # would have to be an all-or-nothing decision on the shared tensor.
@@ -191,8 +274,7 @@ class QlipCache:
                 # resolution changed mid-run (e.g. QlipProgressive low-res
                 # phase) — history is incomparable; start the lane fresh
                 st.reset()
-            din = 0.0 if st.prev_input is None \
-                else float((x - st.prev_input).norm())
+            din = 0.0 if st.prev_input is None else float((x - st.prev_input).norm())
 
             can_skip = new_step and not st.should_compute(float(x.norm()), din)
             if can_skip:
@@ -209,16 +291,20 @@ class QlipCache:
         def reset_wrapper(executor, *a, **kw):
             ctrl.reset()
             return executor(*a, **kw)
+
         try:
             import comfy.patcher_extension as pe
+
             patched.add_wrapper(pe.WrappersMP.SAMPLER_SAMPLE, reset_wrapper)
         except Exception:
             pass  # older ComfyUI: reset on first warmup step instead
 
-        print(f"[QlipCache] enabled: method={method} order={order} "
-              f"threshold={threshold} warmup={warmup_steps} "
-              f"max_skips={max_consecutive_skips}. Best on many-step configs; "
-              f"near-useless on distilled 4–8 step models.")
+        print(
+            f"[QlipCache] enabled: method={method} order={order} "
+            f"threshold={threshold} warmup={warmup_steps} "
+            f"max_skips={max_consecutive_skips}. Best on many-step configs; "
+            f"near-useless on distilled 4–8 step models."
+        )
         return (patched,)
 
 
@@ -228,9 +314,16 @@ class QlipCacheReport:
     @classmethod
     def INPUT_TYPES(s):
         return {
-            "optional": {"trigger": ("*", {"tooltip": "Connect a post-sampler "
-                         "output so this runs after generation. No model input "
-                         "needed."})},
+            "optional": {
+                "trigger": (
+                    "*",
+                    {
+                        "tooltip": "Connect a post-sampler "
+                        "output so this runs after generation. No model input "
+                        "needed."
+                    },
+                )
+            },
         }
 
     RETURN_TYPES = ("STRING",)
@@ -254,12 +347,17 @@ class QlipCacheReport:
             msg = "[QlipCache] no steps recorded yet — generate once."
             print(msg)
             return (msg,)
-        note = ("" if s["skipped_steps"] else
-                "  (0 skips — either warmup covered the whole run, few steps, "
-                "or a distilled model with no inter-step redundancy)")
-        msg = (f"[QlipCache] {s['real_steps']} real / {s['skipped_steps']} "
-               f"skipped of {s['total']} → compute ratio {s['compute_ratio']}, "
-               f"ideal speedup {s['ideal_speedup']}x{note}\n"
-               f"  (measure wall-clock with Qlip Timer for the real number)")
+        note = (
+            ""
+            if s["skipped_steps"]
+            else "  (0 skips — either warmup covered the whole run, few steps, "
+            "or a distilled model with no inter-step redundancy)"
+        )
+        msg = (
+            f"[QlipCache] {s['real_steps']} real / {s['skipped_steps']} "
+            f"skipped of {s['total']} → compute ratio {s['compute_ratio']}, "
+            f"ideal speedup {s['ideal_speedup']}x{note}\n"
+            f"  (measure wall-clock with Qlip Timer for the real number)"
+        )
         print(msg)
         return (msg,)

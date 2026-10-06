@@ -15,9 +15,9 @@ Usage (agent calls after the search):
         --out <out>/collage.png --rows 3 --seed 1000
 """
 import argparse
+import glob
 import json
 import os
-import glob
 
 
 def _img_path(store, config, prompt_id, seed):
@@ -39,8 +39,10 @@ def _load_frame(path):
     video file (middle frame). Video (arena stores .mp4 for video models) can't be
     opened by PIL, so pull one frame via imageio."""
     from PIL import Image
+
     if path.lower().endswith(_VIDEO_EXT):
         import imageio
+
         reader = imageio.get_reader(path)
         try:
             try:
@@ -88,8 +90,13 @@ def pick_columns(report, baseline, explicit):
     if best:
         chosen.append(best["name"])
     # candidates that actually pass the quality gate (usable configs, speedup>1)
-    fq = [e for e in front if e.get("mean_lpips") is not None
-          and e["speedup"] > 1.01 and e["mean_lpips"] <= tol]
+    fq = [
+        e
+        for e in front
+        if e.get("mean_lpips") is not None
+        and e["speedup"] > 1.01
+        and e["mean_lpips"] <= tol
+    ]
     # max-quality under gate (lowest lpips)
     if fq:
         mq = min(fq, key=lambda e: e["mean_lpips"])
@@ -102,8 +109,13 @@ def pick_columns(report, baseline, explicit):
             chosen.append(ms["name"])
     # one over-gate extreme-speed point for contrast (clearly labelled by verdict),
     # so the user sees WHY the gate exists — but never in place of a usable one.
-    over = [e for e in front if e.get("mean_lpips") is not None
-            and e["mean_lpips"] > tol and e["speedup"] > 1.01]
+    over = [
+        e
+        for e in front
+        if e.get("mean_lpips") is not None
+        and e["mean_lpips"] > tol
+        and e["speedup"] > 1.01
+    ]
     if over and len(chosen) < 4:
         ms2 = max(over, key=lambda e: e["speedup"])
         if ms2["name"] not in chosen:
@@ -112,8 +124,11 @@ def pick_columns(report, baseline, explicit):
         e = entries.get(n, {})
         v = _verdict_str(e)
         lab = "%s\n%.2fx · LPIPS %.2f%s" % (
-            n, e.get("speedup", 0), e.get("mean_lpips", 0),
-            (" · " + v) if v else "")
+            n,
+            e.get("speedup", 0),
+            e.get("mean_lpips", 0),
+            (" · " + v) if v else "",
+        )
         cols.append((n, lab))
     return cols, (best["name"] if best else None)
 
@@ -140,21 +155,31 @@ def build(store, report, out_path, rows, seed, thumb, explicit_cols):
     for cfg, _ in cols:
         pid_sets.append(set(_prompt_ids(store, cfg, seed, 999)))
     shared = set.intersection(*pid_sets) if pid_sets else set()
+
     # skip prompts whose reference output is a blank / safety-filter card —
     # a row of five grey placeholders shows nothing
     def _blank(path):
         try:
             import numpy as np
             from PIL import Image
-            a = np.asarray(Image.open(path).convert("L").resize((128, 128)), dtype=np.float32)
+
+            a = np.asarray(
+                Image.open(path).convert("L").resize((128, 128)), dtype=np.float32
+            )
             return float(a.std() / 255.0) < 0.035
         except Exception:
             return True
-    live = [pid for pid in sorted(shared)
-            if not _blank(_img_path(store, cols[0][0], pid, seed))]
+
+    live = [
+        pid
+        for pid in sorted(shared)
+        if not _blank(_img_path(store, cols[0][0], pid, seed))
+    ]
     prompt_ids = live[:rows]
     if not prompt_ids:
-        raise SystemExit("no shared prompts across the chosen configs — check the store")
+        raise SystemExit(
+            "no shared prompts across the chosen configs — check the store"
+        )
 
     pad, header_h, label_h = 8, 54, 22
     ncol, nrow = len(cols), len(prompt_ids)
@@ -179,14 +204,23 @@ def build(store, report, out_path, rows, seed, thumb, explicit_cols):
 
     for ci, (cfg, label) in enumerate(cols):
         x = pad + ci * (cell_w + pad)
-        is_best = (cfg == best_name)
+        is_best = cfg == best_name
         head = ("★ BEST\n" + label) if is_best else label
         # header background box for best
         if is_best:
-            draw.rectangle([x - 2, 0, x + cell_w + 2, header_h - 2],
-                           fill="#fff3cd", outline="#f9ab00", width=2)
-        draw.multiline_text((x + 2, 3), head, fill="#202124",
-                            font=(fontb if is_best else font), spacing=1)
+            draw.rectangle(
+                [x - 2, 0, x + cell_w + 2, header_h - 2],
+                fill="#fff3cd",
+                outline="#f9ab00",
+                width=2,
+            )
+        draw.multiline_text(
+            (x + 2, 3),
+            head,
+            fill="#202124",
+            font=(fontb if is_best else font),
+            spacing=1,
+        )
         for ri, pid in enumerate(prompt_ids):
             y = header_h + ri * (thumb + pad)
             p = _img_path(store, cfg, pid, seed)
@@ -202,30 +236,40 @@ def build(store, report, out_path, rows, seed, thumb, explicit_cols):
             else:
                 draw.rectangle([x, y, x + cell_w, y + thumb], outline="#ccc")
             if is_best:
-                draw.rectangle([x - 1, y - 1, x + cell_w + 1, y + thumb + 1],
-                               outline="#f9ab00", width=3)
+                draw.rectangle(
+                    [x - 1, y - 1, x + cell_w + 1, y + thumb + 1],
+                    outline="#f9ab00",
+                    width=3,
+                )
     canvas.save(out_path)
     return out_path, [c[0] for c in cols], prompt_ids
 
 
 def main():
-    ap = argparse.ArgumentParser(description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--store", required=True, help="QLIP_ARENA_ROOT (has runs/<cfg>/images)")
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    ap.add_argument(
+        "--store", required=True, help="QLIP_ARENA_ROOT (has runs/<cfg>/images)"
+    )
     ap.add_argument("--report", required=True, help="report.json from qlip_report.py")
     ap.add_argument("--out", required=True, help="output PNG path")
     ap.add_argument("--rows", type=int, default=3, help="number of prompts (rows)")
     ap.add_argument("--seed", default="1000")
     ap.add_argument("--thumb", type=int, default=320, help="thumbnail size px")
-    ap.add_argument("--configs", default=None,
-                    help="comma list of config names to use as columns (overrides the "
-                         "auto pick of best+max-quality+max-speed); eager is prepended")
+    ap.add_argument(
+        "--configs",
+        default=None,
+        help="comma list of config names to use as columns (overrides the "
+        "auto pick of best+max-quality+max-speed); eager is prepended",
+    )
     args = ap.parse_args()
 
     report = json.load(open(args.report))
     explicit = args.configs.split(",") if args.configs else None
-    path, cols, pids = build(args.store, report, args.out, args.rows, args.seed,
-                             args.thumb, explicit)
+    path, cols, pids = build(
+        args.store, report, args.out, args.rows, args.seed, args.thumb, explicit
+    )
     print("collage: %s" % path)
     print("columns: %s" % ", ".join(cols))
     print("rows (prompts): %s" % ", ".join(pids))

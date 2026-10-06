@@ -34,6 +34,7 @@ def _restore_all_patches():
     _PATCHED_BLOCKS.clear()
     try:
         import qlip.inference.token_prune_core as tp
+
         tp._PREV_HIDDEN.clear()
     except Exception:
         pass
@@ -42,6 +43,7 @@ def _restore_all_patches():
 def _find_block_list(dm):
     """Return the transformer-block ModuleList of a diffusion model, or None."""
     import torch
+
     for attr in ("transformer_blocks", "blocks", "double_blocks", "layers"):
         bl = getattr(dm, attr, None)
         if isinstance(bl, torch.nn.ModuleList) and len(bl) >= 2:
@@ -66,24 +68,58 @@ class QlipTokenPrune:
             "required": {
                 "model": ("MODEL",),
                 "enable": ("BOOLEAN", {"default": True}),
-                "keep_ratio": ("FLOAT", {"default": 0.75, "min": 0.3, "max": 1.0,
-                               "step": 0.05, "tooltip": "Fraction of tokens KEPT "
-                               "on a pruned step. 0.75 = drop the least-salient "
-                               "25%. 1.0 = off. Lower = faster, more quality risk."}),
-                "method": (["l2sq", "l1", "linf", "var"], {"default": "l2sq",
-                           "tooltip": "Saliency criterion per token. l2sq "
-                           "(Sol-Engine default) = sum of squared features."}),
-                "compensation": (["prev", "zero"], {"default": "prev",
-                                 "tooltip": "How dropped tokens are filled: prev "
-                                 "= previous step's hidden state (recommended); "
-                                 "zero = zeros."}),
-                "step_lo": ("FLOAT", {"default": 0.2, "min": 0.0, "max": 1.0,
-                            "step": 0.05, "tooltip": "Prune only while the step "
-                            "fraction is >= this (0=first step, 1=last). Keeps "
-                            "early structure steps full."}),
-                "step_hi": ("FLOAT", {"default": 0.8, "min": 0.0, "max": 1.0,
-                            "step": 0.05, "tooltip": "Prune only while the step "
-                            "fraction is <= this. Keeps late detail steps full."}),
+                "keep_ratio": (
+                    "FLOAT",
+                    {
+                        "default": 0.75,
+                        "min": 0.3,
+                        "max": 1.0,
+                        "step": 0.05,
+                        "tooltip": "Fraction of tokens KEPT "
+                        "on a pruned step. 0.75 = drop the least-salient "
+                        "25%. 1.0 = off. Lower = faster, more quality risk.",
+                    },
+                ),
+                "method": (
+                    ["l2sq", "l1", "linf", "var"],
+                    {
+                        "default": "l2sq",
+                        "tooltip": "Saliency criterion per token. l2sq "
+                        "(Sol-Engine default) = sum of squared features.",
+                    },
+                ),
+                "compensation": (
+                    ["prev", "zero"],
+                    {
+                        "default": "prev",
+                        "tooltip": "How dropped tokens are filled: prev "
+                        "= previous step's hidden state (recommended); "
+                        "zero = zeros.",
+                    },
+                ),
+                "step_lo": (
+                    "FLOAT",
+                    {
+                        "default": 0.2,
+                        "min": 0.0,
+                        "max": 1.0,
+                        "step": 0.05,
+                        "tooltip": "Prune only while the step "
+                        "fraction is >= this (0=first step, 1=last). Keeps "
+                        "early structure steps full.",
+                    },
+                ),
+                "step_hi": (
+                    "FLOAT",
+                    {
+                        "default": 0.8,
+                        "min": 0.0,
+                        "max": 1.0,
+                        "step": 0.05,
+                        "tooltip": "Prune only while the step "
+                        "fraction is <= this. Keeps late detail steps full.",
+                    },
+                ),
             },
         }
 
@@ -96,8 +132,16 @@ class QlipTokenPrune:
     def IS_CHANGED(cls, **kwargs):
         return float("nan")
 
-    def apply(self, model, enable=True, keep_ratio=0.75, method="l2sq",
-              compensation="prev", step_lo=0.2, step_hi=0.8):
+    def apply(
+        self,
+        model,
+        enable=True,
+        keep_ratio=0.75,
+        method="l2sq",
+        compensation="prev",
+        step_lo=0.2,
+        step_hi=0.8,
+    ):
         _validate_diffusion_model_input(model, "QlipTokenPrune")
         # ALWAYS undo any previous token-prune patch + clear the process-wide prev
         # buffer before doing anything — this makes disable actually disable, and
@@ -109,28 +153,36 @@ class QlipTokenPrune:
             return (patched,)
 
         try:
-            from qlip.inference.token_prune_core import (
-                TokenPruner, TokenPruneConfig)
+            from qlip.inference.token_prune_core import TokenPruneConfig, TokenPruner
         except ImportError as e:
             raise RuntimeError(
                 "QlipTokenPrune requires the qlip package (licensed). Install "
-                "qlip and log in with your TheStage token.") from e
+                "qlip and log in with your TheStage token."
+            ) from e
 
         dm = patched.model.diffusion_model
         attr, block_list = _find_block_list(dm)
         if block_list is None:
-            print("[QlipTokenPrune] no transformer-block ModuleList found on this "
-                  "model — token pruning is a no-op here (works on standard DiTs).")
+            print(
+                "[QlipTokenPrune] no transformer-block ModuleList found on this "
+                "model — token pruning is a no-op here (works on standard DiTs)."
+            )
             return (patched,)
 
         try:
             model_tag = f"{type(dm).__name__}:{sum(1 for _ in dm.parameters())}"
         except Exception:
             model_tag = None
-        pruner = TokenPruner(TokenPruneConfig(
-            keep_ratio=float(keep_ratio), method=method,
-            compensation=compensation, step_lo=float(step_lo),
-            step_hi=float(step_hi)), model_tag=model_tag)
+        pruner = TokenPruner(
+            TokenPruneConfig(
+                keep_ratio=float(keep_ratio),
+                method=method,
+                compensation=compensation,
+                step_lo=float(step_lo),
+                step_hi=float(step_hi),
+            ),
+            model_tag=model_tag,
+        )
         pruner.reset()
 
         # step-fraction clock: the model wrapper sees each denoising step; we map
@@ -151,6 +203,7 @@ class QlipTokenPrune:
             if prev_wrapper is not None:
                 return prev_wrapper(apply_model, args)
             return apply_model(args["input"], args["timestep"], **args["c"])
+
         patched.set_model_unet_function_wrapper(unet_wrapper)
 
         # ROBUST block-loop hook: patch the FIRST block to gather kept tokens and
@@ -161,6 +214,7 @@ class QlipTokenPrune:
         # the last block restores the full token count. Non-tensor / mismatched
         # shapes fall through untouched (safe no-op for that call).
         import torch
+
         first_blk, last_blk = block_list[0], block_list[-1]
         of_first = first_blk.forward
         of_last = last_blk.forward
@@ -178,6 +232,7 @@ class QlipTokenPrune:
             if x is not None and pruner._should_prune(lane["frac"], x.shape[1]):
                 keep = max(1, int(round(x.shape[1] * pruner.cfg.keep_ratio)))
                 from qlip.inference.token_prune_core import feature_saliency
+
                 sal = feature_saliency(x, pruner.cfg.method).mean(0)
                 idx = torch.sort(torch.topk(sal, keep).indices).values
                 st["idx"], st["full_shape"] = idx, x.shape
@@ -189,14 +244,22 @@ class QlipTokenPrune:
         def last_forward(*args, **kw):
             out = of_last(*args, **kw)
             idx = st["idx"]
-            if idx is not None and torch.is_tensor(out) and out.dim() == 3 \
-                    and out.shape[1] == idx.shape[0]:
+            if (
+                idx is not None
+                and torch.is_tensor(out)
+                and out.dim() == 3
+                and out.shape[1] == idx.shape[0]
+            ):
                 import qlip.inference.token_prune_core as tp
+
                 prev = tp._PREV_HIDDEN.get(pruner.model_tag)
                 B, _, C = out.shape
                 N = st["full_shape"][1]
-                if pruner.cfg.compensation == "prev" and prev is not None \
-                        and prev.shape == (B, N, C):
+                if (
+                    pruner.cfg.compensation == "prev"
+                    and prev is not None
+                    and prev.shape == (B, N, C)
+                ):
                     full = prev.clone()
                 else:
                     full = out.new_zeros(B, N, C)
@@ -208,6 +271,7 @@ class QlipTokenPrune:
             # full pass (no prune this step): refresh prev buffer
             if torch.is_tensor(out) and out.dim() == 3:
                 import qlip.inference.token_prune_core as tp
+
                 tp._PREV_HIDDEN[pruner.model_tag] = out.detach()
             return out
 
@@ -218,10 +282,12 @@ class QlipTokenPrune:
         _PATCHED_BLOCKS[id(last_blk)] = (last_blk, of_last)
         patched.model._qlip_token_pruner = pruner
 
-        print(f"[QlipTokenPrune] armed on {attr} ({len(block_list)} blocks): "
-              f"keep {keep_ratio:.0%} on step window [{step_lo:.2f},{step_hi:.2f}], "
-              f"method={method}, comp={compensation}. Licensed qlip session. "
-              f"Video lever — orthogonal to sparse/progressive.")
+        print(
+            f"[QlipTokenPrune] armed on {attr} ({len(block_list)} blocks): "
+            f"keep {keep_ratio:.0%} on step window [{step_lo:.2f},{step_hi:.2f}], "
+            f"method={method}, comp={compensation}. Licensed qlip session. "
+            f"Video lever — orthogonal to sparse/progressive."
+        )
         return (patched,)
 
 
