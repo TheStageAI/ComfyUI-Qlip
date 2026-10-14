@@ -9,7 +9,9 @@
 # qlip.core is installed SEPARATELY with --no-deps by install.py, AFTER this file:
 #   pip install "qlip.core[blackwell]" --no-deps --extra-index-url <staging>
 # because the wheel's metadata would otherwise pull a cu12 torch over the cu130
-# build and break the FP4 engines. (--no-deps installs code only.)
+# build and break the FP4 engines. (--no-deps installs code only, so the qlip
+# runtime deps it needs at import / engine load are listed in this file — the
+# rest come with ComfyUI's own requirements.)
 
 # TensorRT 10.15 (Blackwell FP4 fusion needs >= 10.13). cu12 wheels run on the
 # CUDA-13 stack (backward compatible); engines are tied to the TRT version
@@ -25,6 +27,7 @@ onnx-ir==0.2.1
 
 # Runtime helpers
 cupy-cuda12x==14.1.1
+cryptography    # qlip engine loader (encrypted .qlip engines)
 polygraphy==0.50.3
 thestage        # CLI to set the access token
 

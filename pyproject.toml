@@ -54,6 +54,7 @@ blackwell = [
     "onnxscript==0.7.0",
     "onnx-ir==0.2.1",
     "cupy-cuda12x==14.1.1",
+    "cryptography",
     "polygraphy==0.50.3",
     "diffusers==0.38.0",
     "transformers==5.10.2",

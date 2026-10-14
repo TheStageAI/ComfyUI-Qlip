@@ -15,7 +15,8 @@ Models (ComfyUI/models): diffusion_models/krea2_turbo_bf16.safetensors,
 text_encoders/qwen3vl_4b_bf16.safetensors, vae/qwen_image_vae.safetensors,
 loras/krea2_retroanime.safetensors, loras/krea2_softwatercolor.safetensors
 (all from HF Comfy-Org/Krea-2). Engines: HF TheStageAI/Elastic-Krea-2
-models/H200/krea2-fp8_lora (downloaded by QlipEnginesLoader on first use).
+models/H200/krea2-fp8_lora_trt_10_13 (TensorRT 10.13, matches the nvidia
+profile; downloaded by QlipEnginesLoader on first use).
 """
 import argparse
 import json
@@ -40,7 +41,7 @@ PROMPTS = [
     "A young man in a denim jacket sitting on a vintage motorcycle in a desert, harsh noon sun, film grain",
 ]
 LORAS = ["krea2_retroanime.safetensors", "krea2_softwatercolor.safetensors"]
-HF_ENGINES = "TheStageAI/Elastic-Krea-2:models/H200/krea2-fp8_lora"
+HF_ENGINES = "TheStageAI/Elastic-Krea-2:models/H200/krea2-fp8_lora_trt_10_13"
 SIZE, STEPS, SEED = 1536, 8, 42026001
 
 
