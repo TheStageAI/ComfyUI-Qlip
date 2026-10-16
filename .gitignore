@@ -3,3 +3,9 @@ docs
 backup
 venv
 bench
+
+# Python / OS / IDE
+__pycache__/
+*.pyc
+.DS_Store
+.idea/
