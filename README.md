@@ -791,8 +791,7 @@ Precompiled engines are hosted on HuggingFace. The **Qlip Engines Loader** node 
 | LTX-2 19B Distilled FP8 + LoRA | `TheStageAI/Elastic-LTX-2:models/H100/ltx-2-19b-distilled-fp8_lora` |
 | Z-Image-Turbo BF16 + LoRA | `TheStageAI/Elastic-Z-Image-Turbo:models/H100/z-image-turbo_lora` |
 | Z-Image-Turbo FP8 + LoRA | `TheStageAI/Elastic-Z-Image-Turbo:models/H100/z-image-turbo-fp8_lora` |
-| LTX-Video 2.3 22B Distilled FP8 + LoRA (t2v) | `TheStageAI/Elastic-LTX-2.3:models/H100/ltx-2.3-22b-distilled-fp8_lora` |
-| LTX-Video 2.3 22B Dev FP8-static (t2v, no LoRA, 1280×704×121) | `TheStageAI/Elastic-LTX-2.3:models/H100/ltx-2.3-22b-dev-fp8-static` |
+| LTX-Video 2.3 22B Distilled FP8 + LoRA (t2v) | `TheStageAI/Elastic-LTX-2.3:models/H100/ltx-2.3-22b-distilled-fp8-t2v_lora` |
 | Qwen Image Edit BF16 + LoRA | `TheStageAI/Elastic-Qwen-Image-Edit:models/H100/qwen-image-edit-bf16_lora` |
 | Wan 2.2 I2V High-Noise FP8 + LoRA | `TheStageAI/Elastic-Wan2.2-I2V:models/H100/wan-i2v-high-noise-fp8_lora` |
 | Wan 2.2 I2V Low-Noise FP8 + LoRA | `TheStageAI/Elastic-Wan2.2-I2V:models/H100/wan-i2v-low-noise-fp8_lora` |
@@ -1092,11 +1091,11 @@ Ready-to-use ComfyUI workflow files are in [`workflows/`](workflows/):
 
 | File | Description | ComfyUI commit |
 |------|-------------|----------------|
-| `Flux-Klein.json` | FLUX.2 Klein image generation | `048dd2f3` |
+| `flux-klein.json` | FLUX.2 Klein image generation | `048dd2f3` |
 | `video_ltx2_i2v_distilled.json` | LTX-2 19B image-to-video | `048dd2f3` |
 | `z-image-turbo.json` | Z-Image-Turbo image generation | `048dd2f3` |
-| `video_ltx2_3_t2v.json` | LTX-Video 2.3 22B text-to-video | `b615af1c` |
-| `qwen_image_edit.json` | Qwen Image Edit | `b615af1c` |
+| `video_ltx_2_3_t2v-qlip.json` | LTX-Video 2.3 22B text-to-video | `b615af1c` |
+| `qwen-image-edit.json` | Qwen Image Edit | `b615af1c` |
 
 Model download scripts are in [`scripts/`](scripts/):
 
