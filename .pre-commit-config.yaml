@@ -1,0 +1,42 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.5.0
+    # https://github.com/pre-commit/pre-commit-hooks?tab=readme-ov-file#hooks-available
+    hooks:
+      - id: check-added-large-files
+      - id: check-ast
+      - id: check-case-conflict
+      - id: check-docstring-first
+      - id: check-executables-have-shebangs
+      - id: check-json
+      - id: check-merge-conflict
+      - id: check-shebang-scripts-are-executable
+      - id: check-toml
+      - id: debug-statements
+      # - id: detect-aws-credentials
+      - id: detect-private-key
+      - id: end-of-file-fixer
+      # requirements-txt-fixer is off on purpose: it sorts the lines and
+      # detaches the install comments from their groups in requirements*.txt
+      - id: trailing-whitespace
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    # Ruff version.
+    rev: v0.1.8
+    hooks:
+      # Run the linter.
+      - id: ruff
+        args: [ '--fix', '--preview', '--config', 'pyproject.toml' ]
+      # Run the formatter.
+      - id: ruff-format
+        args: [ '--config', 'pyproject.toml' ]
+
+# Temporarily disable due to unpredicted behavior of hook work
+# (Not the same as local run)
+#  - repo: https://github.com/pre-commit/mirrors-mypy
+#    rev: 'v1.7.1'
+#    hooks:
+#      - id: mypy
+#        args: [ '--config-file', 'pyproject.toml' ]
+#        types_or: [ python, pyi ]
+#        files: "qlip/base|qlip/distillation"

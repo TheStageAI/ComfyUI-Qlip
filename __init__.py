@@ -1,9 +1,20 @@
-from .nodes import QlipEnginesLoader, QlipLoraStack, QlipLoraSwitch
-from .nodes import QlipTimerStart, QlipTimerStop, QlipTimerReport
-from .nodes import QlipCache, QlipCacheReport
-from .nodes import QlipAutoSparse
-from .nodes import QlipProgressive
-from .nodes import QlipCompile, QlipQuantConfig
+from .nodes import (
+    QlipAutoSparse,
+    QlipCache,
+    QlipCacheReport,
+    QlipCompile,
+    QlipDrafter,
+    QlipEnginesLoader,
+    QlipLoraStack,
+    QlipLoraSwitch,
+    QlipProgressive,
+    QlipQuantConfig,
+    QlipSpectrumFit,
+    QlipTimerReport,
+    QlipTimerStart,
+    QlipTimerStop,
+    QlipTokenPrune,
+)
 
 NODE_CLASS_MAPPINGS = {
     "QlipEnginesLoader": QlipEnginesLoader,
@@ -16,8 +27,11 @@ NODE_CLASS_MAPPINGS = {
     "QlipCacheReport": QlipCacheReport,
     "QlipAutoSparse": QlipAutoSparse,
     "QlipProgressive": QlipProgressive,
+    "QlipSpectrumFit": QlipSpectrumFit,
     "QlipCompile": QlipCompile,
     "QlipQuantConfig": QlipQuantConfig,
+    "QlipDrafter": QlipDrafter,
+    "QlipTokenPrune": QlipTokenPrune,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -31,8 +45,11 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "QlipCacheReport": "Qlip Cache Report",
     "QlipAutoSparse": "Qlip Auto Sparse",
     "QlipProgressive": "Qlip Progressive",
+    "QlipSpectrumFit": "Qlip Spectrum Fit",
     "QlipCompile": "Qlip Compile",
     "QlipQuantConfig": "Qlip Quant Config",
+    "QlipDrafter": "Qlip Drafter",
+    "QlipTokenPrune": "Qlip Token Prune",
 }
 
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS"]
