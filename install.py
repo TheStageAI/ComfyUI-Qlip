@@ -126,6 +126,13 @@ def main():
 
     dev = args.device or detect_device()
     prof = PROFILES[dev]
+    if dev == "blackwell" and sys.version_info < (3, 11):
+        # requirements_blackwell.txt pins numpy 2.4.x, which needs Python 3.11+
+        print(
+            f"!! the blackwell profile needs Python 3.11+, this is "
+            f"{sys.version.split()[0]} ({sys.executable})"
+        )
+        sys.exit(1)
     comfy_root = args.comfy_root or os.path.abspath(os.path.join(here, "..", ".."))
     pip = [sys.executable, "-m", "pip"]
 

@@ -524,7 +524,7 @@ class QlipCompile:
         )
         recipe = None
         if engines_dir:
-            from qlip.inference.loom import export as lx
+            from qlip.inference.inductor import workspace as lx
 
             recipe = lx.make_recipe(
                 lora=lora_rec,
@@ -606,7 +606,7 @@ class QlipCompile:
                     return
                 state["regs"] = regs
                 if state["aot"]:
-                    from qlip.inference.loom import export as lx
+                    from qlip.inference.inductor import workspace as lx
 
                     im = lx.load_workspace(dm, engines_dir, device=device)
                     _ACTIVE[id(dm)] = {
@@ -650,7 +650,7 @@ class QlipCompile:
                         # loads them and skips the calibration image
                         import os as _os
 
-                        from qlip.inference.loom import export as lx
+                        from qlip.inference.loom import scales as lx
 
                         fp = lx.weights_fingerprint(
                             dm,
@@ -796,12 +796,13 @@ class QlipCompile:
                 and state["regs"]
             ):
                 # arm the capture for THIS run: one real call per block kind
-                from qlip.inference.loom import export as lx
-
                 try:
-                    from qlip.compiler.inductor import InductorBuilderConfig
+                    from qlip.compiler.inductor import (
+                        InductorBuilderConfig,
+                        WorkspaceBuilder,
+                    )
 
-                    b = lx.WorkspaceBuilder(
+                    b = WorkspaceBuilder(
                         patched.model.diffusion_model,
                         engines_dir,
                         regions=state["regs"],
@@ -830,7 +831,7 @@ class QlipCompile:
                     nf = freeze_scales(state["qmods"])
                     msg = ""
                     if state.get("scale_path"):
-                        from qlip.inference.loom import export as lx
+                        from qlip.inference.loom import scales as lx
 
                         try:
                             lx.save_scales(dm, state["scale_path"])

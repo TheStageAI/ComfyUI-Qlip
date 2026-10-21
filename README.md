@@ -14,7 +14,7 @@ Qlip compiles transformer blocks into optimized engines, delivering significant 
 
 See for yourself: the baseline (eager PyTorch) and our Qlip engines produce
 almost the same image, but Qlip runs several times faster (NVFP4 + FP4-attention
-on RTX 5090). More side-by-side comparisons and metrics in the
+on RTX 5090).
 
 <table>
   <tr>
@@ -64,7 +64,7 @@ on RTX 5090). More side-by-side comparisons and metrics in the
     and B200 (FP8-dynamic, NVFP4). Up to **3.6×** over BF16 eager on the 5090.
   - **Z-Image-Turbo 6B** — RTX 5090 and B200 (FP8-dynamic, NVFP4, NVFP4 + FP4-attn).
   - **Wan 2.2 I2V 14B** — RTX 5090 (NVFP4, NVFP4 + FP4-attn), encrypted, LoRA-enabled.
-  See the [Blackwell benchmarks](#blackwell-engines--planned-in-progress) for the full tables.
+  See the [Blackwell benchmarks](#blackwell-engines-rtx-5090--b200) for the full tables.
 - **Wan 2.2 low→high LoRA** — we trained a LoRA that lets the Wan 2.2 low-noise
   expert do the high-noise expert's job, collapsing the two-expert pipeline into a
   **single transformer**. Measured **18.1 s/clip vs 38.1 s BF16 (~2.1×)** at
@@ -83,7 +83,7 @@ on RTX 5090). More side-by-side comparisons and metrics in the
 - **Wan 2.2 I2V (14B)** — image-to-video, FP8 + LoRA, two-stage pipeline (high-noise + low-noise), dynamic shapes up to 640x640
 - **Shared memory** — new `shared_memory` parameter in QlipEnginesLoader. Multiple loaders with the same group name share one GPU memory pool (size = max, not sum). Enables Wan 2.2 two-transformer setup without doubling VRAM
 - **Custom model patches** (`qlip_patch.py`) — place `qlip_patch.py` next to engine files, auto-loaded at runtime. Supports `patch_signatures(dm)` and `patch_caller(dm)` hooks
-- **LTX-Video 2.3 (22B)** — text-to-video, FP8; distilled (+ LoRA, dynamic shapes 512px–1408px, 9–121 frames) and dev (FP8-static, no LoRA, 1280×704×121)
+- **LTX-Video 2.3 (22B)** — text-to-video, FP8 distilled + LoRA, dynamic shapes 512px–1408px, 9–121 frames
 - **Qwen Image Edit** — image editing, BF16 + LoRA, dynamic shapes (512px–1536px), reference image support
 
 ## Table of Contents
@@ -199,10 +199,11 @@ full contract and **[`tools/`](tools/)** for the scripts it drives (`fit_spectru
 | [**LTX-Video 2.3**](https://huggingface.co/Lightricks/LTX-2.3) (LTXAV) | Audio-Video DiT | 22B | Video (t2v) | [TheStageAI/Elastic-LTX-2.3](https://huggingface.co/TheStageAI/Elastic-LTX-2.3) |
 | [**Qwen Image Edit**](https://huggingface.co/Comfy-Org/Qwen_Image_Edit) | Joint DiT | 14B | Image Edit | [TheStageAI/Elastic-Qwen-Image-Edit](https://huggingface.co/TheStageAI/Elastic-Qwen-Image-Edit) |
 | [**Wan 2.2 I2V**](https://github.com/Wan-Video/Wan2.2) | DiT | 14B | Video (i2v) | [TheStageAI/Elastic-Wan2.2-I2V](https://huggingface.co/TheStageAI/Elastic-Wan2.2-I2V) |
+| [**Krea 2 Turbo**](https://huggingface.co/krea/Krea-2-Turbo) | Single-stream DiT | — | Image | [TheStageAI/Elastic-Krea-2](https://huggingface.co/TheStageAI/Elastic-Krea-2) |
 
 More models coming soon — stay tuned for updates.
 
-> **Note:** LTX-Video 2.3, Qwen Image Edit, and Wan 2.2 I2V require a specific ComfyUI version and custom node setup. See each model's HuggingFace repo for installation instructions and compatible ComfyUI commit.
+> **Note:** LTX-Video 2.3, Qwen Image Edit, Wan 2.2 I2V and Krea 2 require a specific ComfyUI version and custom node setup. See each model's HuggingFace repo for installation instructions and compatible ComfyUI commit.
 
 ### Model Details
 
@@ -244,14 +245,13 @@ Image generation model. Compiled with cfg=1.0, batch=1, static sizes only.
 
 #### LTX-Video 2.3 (22B)
 
-Text-to-video model. 22B full-scale LTXAV architecture with audio+video dual-stream attention. Compiled as t2v (text-to-video). Two builds: the LoRA-enabled **distilled** engines (dynamic shapes, batch 2), and the standalone **dev** engines (FP8-static, batch 1, fixed size — no LoRA needed).
+Text-to-video model. 22B full-scale LTXAV architecture with audio+video dual-stream attention. Compiled as t2v (text-to-video): LoRA-enabled **distilled** engines with dynamic shapes, batch 2.
 
 | Variant | CFG | Batch | Engine Type | Static Sizes (WxHxFrames) | Dynamic Range |
 |---------|-----|-------|-------------|--------------------------|---------------|
 | 22B distilled FP8 + LoRA | 1.0, 4.0 | 2 (fixed) | t2v | 768x512x41, 1280x720x121, 1408x896x121 | 512px—768px—1408px, 9—121 frames |
-| 22B **dev** FP8-static (no LoRA) | 1.0 | 1 (fixed) | t2v | 1280x704x121 | fixed (static build) |
 
-The **distilled** engines have dynamic resolution and frame count (LoRA rank 1–256). The **dev** engines are FP8-**static**: compiled to a single size (1280×704×121, 15-step schedule) for maximum quality at that resolution, batch 1 (cfg 1.0), and carry no LoRA runtime overhead. Use the dev engines when you want the full dev checkpoint at a fixed size; use the distilled engines for dynamic sizes and runtime LoRA.
+The **distilled** engines have dynamic resolution and frame count (LoRA rank 1–256).
 
 #### Qwen Image Edit
 
@@ -276,11 +276,18 @@ Image-to-video generation model. Two-stage pipeline: high-noise transformer gene
 
 Each transformer has its own engines directory and QlipEnginesLoader node. Set `shared_memory="wan"` on both loaders to share one GPU memory pool (reduces VRAM usage since the two transformers never run simultaneously).
 
-## Benchmarks
+On the **RTX 5090** Wan 2.2 runs as a **single expert**: the low-noise transformer (NVFP4 + LoRA) plus our low→high LoRA, which takes over the high-noise expert's job. See [Wan 2.2 I2V — RTX 5090](#-wan-22-i2v-14b--rtx-5090).
 
-> **See also: [Quality & Performance Data Sheet](docs/quality/QUALITY.md)** — all
-> latency tables (H100 + Blackwell), Z-Image quality metrics, the ANNA size/quality
-> slider for FLUX.2 Klein, and visual comparisons. Raw data for presentations.
+#### Krea 2 Turbo
+
+Image generation model, 8 steps, batch 1. FP8-static engines with runtime LoRA (rank up to 64), compiled on **H200**. Requires ComfyUI commit **`c2bcbecd`** (v0.32.0, the first version with Krea 2). Models: `krea2_turbo_bf16.safetensors`, `qwen3vl_4b_bf16.safetensors`, `qwen_image_vae.safetensors` and optional LoRAs from [Comfy-Org/Krea-2](https://huggingface.co/Comfy-Org/Krea-2).
+
+| Variant | Static Sizes | Dynamic Range | TensorRT |
+|---------|-------------|---------------|----------|
+| FP8 + LoRA (`krea2-fp8_lora_trt_10_13`) | 1536x1536, 1536x864, 864x1536, 1024x1024 | 256px — 1024px — 1536px | 10.13 (`nvidia` install profile) |
+| FP8 + LoRA (`krea2-fp8_lora`, legacy) | same | same | 10.15 |
+
+## Benchmarks
 
 All measurements: single image/video generation, batch size 1, H100, torch 2.8.0 (the numbers were measured on 2.8.0; the current `requirements.txt` pins torch 2.9.1 — engines run identically on it), **warm run** (second run, engines already loaded). Current precompiled engines include LoRA support, which adds minor overhead (~5-15%) compared to non-LoRA engines. Non-LoRA engines with faster inference will be available in a future release.
 
@@ -335,18 +342,27 @@ Transformer pass time only (2nd run, warm). Two-stage pipeline (high-noise + low
 | Eager (PyTorch) | 18.573 | 1.0x |
 | **Qlip FP8 + LoRA** | 12.035 | **1.54x** |
 
+### Image Generation (Krea 2 Turbo, 1536x1536, 8 steps, H200)
+
+Sampler time, median of images 2–8 from `tools/krea_check.py` (8 prompts, LoRA switched after the 4th).
+
+| Method | Sampler Time (s) | Speedup |
+|--------|------------------|---------|
+| Eager (PyTorch) | 5.00 | 1.0x |
+| **Qlip FP8 + LoRA** (TensorRT 10.13) | 3.41 | 1.47x |
+| **Qlip FP8 + LoRA** (TensorRT 10.15) | 3.10 | 1.61x |
+| **Qlip FP8 + LoRA** (TensorRT 10.15) + QlipCache + QlipProgressive | 1.85 | **2.70x** |
+
+The TensorRT 10.13 engine was measured in a separate run on the same H200 setup.
+
 > All benchmarked engines include runtime LoRA support. LoRA adds ~5-15% overhead due to additional MatMul operations per layer. Faster non-LoRA engines will be available in a future update.
->
-> More GPUs (B200, L40S, RTX 5090) coming soon.
 
-### Blackwell engines — planned (in progress)
+### Blackwell engines (RTX 5090 / B200)
 
-We are recompiling the lineup for **Blackwell**: RTX 5090 (sm_120a) for models that
-fit in ~31 GB, B200 (sm_100) for the rest, and all of them on B200 for a full
-sm_100 set. New on Blackwell: **NVFP4 (FP4)** weights (~4× smaller than BF16, native
-fast path) in addition to FP8, plus FP4 attention on the 5090. Single image/video
-generation, batch size 1, warm run (engines already loaded), LoRA-enabled engines.
-Measurements filled in as they come; `_TBD_` = not measured yet. FLUX.2 Klein is
+Engines for **Blackwell**: RTX 5090 (sm_120a) and B200 (sm_100). New on Blackwell:
+**NVFP4 (FP4)** weights (~4× smaller than BF16, native fast path) in addition to FP8,
+plus FP4 attention on the 5090. Single image/video generation, batch size 1, warm run
+(engines already loaded), LoRA-enabled engines. FLUX.2 Klein is
 the **distilled** variant — **4 sampling steps** (distillation lets it converge in
 4 vs ~50 for the base model), cfg 1.0, batch 1; times are the full warm generation
 at 1024x2048.
@@ -466,7 +482,7 @@ via the `QlipLoraStack`.
   `qlip` update. See [FP4-attention plugin](#required-for-fp4-attention-engines-build-the-fp4attn-plugin--rtx-5090-only)
   below.
 - **NVFP4 (no FP4-attention)** — **ready to use right now** with the current
-  `qlip.core[nvidia]`, no plugin build required. Slightly slower than the
+  `qlip.core[blackwell]`, no plugin build required. Slightly slower than the
   FP4-attention variant but needs nothing extra, and still a large win over BF16.
 
 #### FLUX.2 Klein 9B (edit) — B200
@@ -489,10 +505,10 @@ via the `QlipLoraStack`.
 > image-edit mode** (`--edit --max-ref-images 1`) — unlike the H100 engines, which
 > are plain text-to-image (use the edit workflow with the Blackwell Klein engines).
 > **LTX-2 (i2v) and LTX-2.3 (t2v) are both kept** — different tasks, not redundant.
-> **Wan 2.2 is not part of this Blackwell round.** FP4 attention is **5090-only**
-> (the SageAttention3 kernel targets sm_120a; B200 keeps FP8/BF16 attention). New
-> precompiled-engine `hf_repo` paths (e.g. `.../models/RTX5090/...`,
-> `.../models/B200/...`) will be published alongside the existing `H100` ones.
+> **Wan 2.2 on Blackwell is RTX 5090 only** (single expert, see above). FP4 attention
+> is **5090-only** (the SageAttention3 kernel targets sm_120a; B200 keeps FP8/BF16
+> attention). Blackwell engines live under `models/GeForce-RTX-5090/` and
+> `models/B200/` in each repo — see [Precompiled Engines](#precompiled-engines).
 
 > **⚠ ComfyUI commit for ALL Blackwell engines — `b615af1c`.** Unlike the H100
 > engines (which use a mix of `048dd2f3` for FLUX.2 Klein / LTX-2 / Z-Image and
@@ -507,7 +523,7 @@ via the `QlipLoraStack`.
 
 ### Prerequisites
 
-- Python 3.10+
+- Python 3.10+ (Hopper / Ada); **Python 3.11+ for Blackwell** — the `blackwell` profile pins `numpy==2.4.6`, which needs 3.11
 - NVIDIA GPU — Hopper / Ada (CUDA 12) or Blackwell RTX 5090 / B200 (CUDA 13)
 - ComfyUI installed and working (see below if starting from scratch)
 
@@ -550,9 +566,10 @@ Prefer to do it by hand (or debugging a step)? The full manual sequence is below
 
 > **ComfyUI version matters.** Different models require different ComfyUI commits:
 > - FLUX.2 Klein, LTX-Video 2, Z-Image-Turbo → commit **`048dd2f3`** (default below)
-> - LTX-Video 2.3, Qwen Image Edit, Wan 2.2 I2V → commit **`b615af1c`** (newer)
+> - LTX-Video 2.3, Qwen Image Edit, Wan 2.2 I2V, all Blackwell engines → commit **`b615af1c`** (newer)
+> - Krea 2 → commit **`c2bcbecd`** (ComfyUI v0.32.0, the first version with Krea 2)
 >
-> Check the model's HuggingFace repo for the exact commit. If you need multiple models from different commits, use the **newer** commit (`b615af1c`) — it is backwards-compatible with older models.
+> Check the model's HuggingFace repo for the exact commit. If you need several of the first two groups, use `b615af1c` — it is backwards-compatible with the older models.
 
 > **⚠️ Blackwell (RTX 5090 / B200):** ComfyUI's own `requirements.txt` installs a
 > **CUDA-12** torch that would overwrite the **cu130** torch the FP4 engines need.
@@ -635,7 +652,7 @@ pip install "qlip.core[blackwell]" --no-deps \
 The installer does exactly this ordering for you — prefer it unless you're
 debugging a step.
 
-Verify:
+Verify (after setting the token, [Step 3](#step-3-setup-thestage-api-token) — `import qlip` needs it):
 
 ```bash
 python -c "import torch, tensorrt, qlip; \
@@ -653,29 +670,16 @@ python -c "import torch, tensorrt, qlip; \
 
 Get your token at [app.thestage.ai](https://app.thestage.ai). Required for Qlip engine access.
 
-The `thestage` CLI is installed by both the installer and the node's
-`requirements.txt`, so you only need to set the token:
+The installer already installs the `thestage` CLI, so you only need to set the token:
 
 ```bash
 thestage config set --access-token <YOUR_API_TOKEN>
 ```
 
-> If `thestage: command not found`: `pip install thestage` and retry.
-
-> **⚠️ Missing / invalid token looks like a broken install — it isn't.** With no
-> valid TheStage token, `import qlip` (or running an engine) fails in one of two
-> ways, **both of which mean "set your token", not "reinstall":**
->
-> - `RuntimeError: [PyArmor] Validation failed.` — qlip's licensed runtime can't
->   validate without a token, so the module won't even import.
-> - `Nvidia support is not available. Please install with
->   `pip install qlip.core[nvidia]`` — misleading: qlip *is* installed, it just
->   can't activate its GPU backend without a valid token.
->
-> The fix for both is the token, not reinstalling qlip:
-> `thestage config set --access-token <YOUR_API_TOKEN>` and retry. (This is
-> expected right after `install.py` — the installer stops before the token step
-> on purpose.)
+> **No token looks like a broken install, but it isn't.** Without a valid token
+> `import qlip` fails with `RuntimeError: [PyArmor] Validation failed`, and engine
+> loading may report `Nvidia support is not available`. Set the token and retry; do
+> not reinstall qlip.
 
 ### (Optional) Download models
 
@@ -691,7 +695,8 @@ bash custom_nodes/ComfyUI-Qlip/scripts/download_flux_klein_models.sh
 
 # New models (ComfyUI commit b615af1c)
 bash custom_nodes/ComfyUI-Qlip/scripts/download_ltx_2_3_models.sh
-bash custom_nodes/ComfyUI-Qlip/scripts/download_qwen_image_edit_models.sh
+bash custom_nodes/ComfyUI-Qlip/scripts/download_qwen_image_edit.sh
+bash custom_nodes/ComfyUI-Qlip/scripts/download_wan_i2v_models.sh
 ```
 
 FLUX.2 Klein is a gated model — requires a Hugging Face login (`hf auth login`, or set `HF_TOKEN`; the old `huggingface-cli login` is deprecated) and license acceptance. Override the HuggingFace cache location with `HF_HUB_CACHE` if needed. Scripts skip already-downloaded files.
@@ -730,13 +735,13 @@ pip install flash-attn --no-build-isolation
 > of the `fp4attn` plugin that is **not yet in a public `qlip` update**. Until that
 > update ships, any `…-fp4attn…` engine **will fail to load**. If you need Blackwell
 > speedups today, use the **plain NVFP4 (no FP4-attention)** engines — they run on
-> the current `qlip.core[nvidia]` with **no plugin build required** and are ready to
+> the current `qlip.core[blackwell]` with **no plugin build required** and are ready to
 > use now. The instructions below are how you build the plugin **once the qlip
 > update lands**.
 
 > **Extra step — read this once fp4-attention is supported.** FP4-attention
 > engines contain a `QlipFP4Attention` plugin node. Unlike plain FP8/NVFP4 engines
-> (which load with just `qlip.core[nvidia]`), an fp4-attention engine **will not
+> (which load with just `qlip.core`), an fp4-attention engine **will not
 > load** until the `fp4attn` plugin is available — the loader raises an actionable
 > error otherwise. The plugin is **RTX 5090 / consumer Blackwell (sm_120a) only**
 > (its kernel targets `sm_120a`; it does **not** build/run on H100 sm_90 or B200
@@ -745,7 +750,7 @@ pip install flash-attn --no-build-isolation
 **The plugin is built through `qlip` itself** — you don't clone or compile it by
 hand. `qlip` ships the source, bootstraps the build prerequisites, and JIT-compiles
 the `.so` on first import (cached afterwards). Prerequisites: CUDA 13 toolkit
-(`nvcc`), `tensorrt-cu12` ≥ 10.15, PyTorch 2.11+cu13x. The plugin is
+(`nvcc`), `tensorrt-cu12` ≥ 10.15, PyTorch 2.12+cu130 (the `blackwell` install profile). The plugin is
 **self-contained** — its FP4 attention CUDA kernel is compiled into the plugin `.so`
 (vendored build), so it needs **no** separate SageAttention package at build or run
 time. (This only works once the fp4attn-supporting `qlip` update is installed —
@@ -797,6 +802,21 @@ Precompiled engines are hosted on HuggingFace. The **Qlip Engines Loader** node 
 | Wan 2.2 I2V Low-Noise FP8 + LoRA | `TheStageAI/Elastic-Wan2.2-I2V:models/H100/wan-i2v-low-noise-fp8_lora` |
 | Wan 2.2 I2V NVFP4 + LoRA — **RTX 5090** (ready now) | `TheStageAI/Elastic-Wan2.2-I2V:models/GeForce-RTX-5090/wan-i2v-low-noise-nvfp4_lora` |
 | Wan 2.2 I2V NVFP4 + FP4-attention + LoRA — **RTX 5090** (needs qlip fp4attn update) | `TheStageAI/Elastic-Wan2.2-I2V:models/GeForce-RTX-5090/wan-i2v-low-noise-nvfp4-fp4attn_lora` |
+| FLUX.2 Klein 9B Edit FP8-dynamic + LoRA — **RTX 5090** | `TheStageAI/Elastic-FLUX-2-Klein:models/GeForce-RTX-5090/klein-9b-fp8-dynamic-edit_lora` |
+| FLUX.2 Klein 9B Edit FP8-static + LoRA — **RTX 5090** | `TheStageAI/Elastic-FLUX-2-Klein:models/GeForce-RTX-5090/klein-9b-fp8-static-edit_lora` |
+| FLUX.2 Klein 9B Edit NVFP4 + LoRA — **RTX 5090** | `TheStageAI/Elastic-FLUX-2-Klein:models/GeForce-RTX-5090/klein-9b-nvfp4-edit_lora` |
+| FLUX.2 Klein 9B Edit NVFP4 + FP4-attention + LoRA — **RTX 5090** (needs qlip fp4attn update) | `TheStageAI/Elastic-FLUX-2-Klein:models/GeForce-RTX-5090/klein-9b-nvfp4-fp4attn-edit_lora` |
+| FLUX.2 Klein 9B Edit NVFP4 + FP4-attention, no LoRA — **RTX 5090** (needs qlip fp4attn update) | `TheStageAI/Elastic-FLUX-2-Klein:models/GeForce-RTX-5090/klein-9b-nvfp4-fp4attn-edit-nolora` |
+| FLUX.2 Klein 9B Edit FP8-dynamic + LoRA — **B200** | `TheStageAI/Elastic-FLUX-2-Klein:models/B200/klein-9b-fp8-dynamic-edit_lora` |
+| FLUX.2 Klein 9B Edit NVFP4 + LoRA — **B200** | `TheStageAI/Elastic-FLUX-2-Klein:models/B200/klein-9b-nvfp4-edit_lora` |
+| Z-Image-Turbo FP8-dynamic + LoRA — **RTX 5090** | `TheStageAI/Elastic-Z-Image-Turbo:models/GeForce-RTX-5090/z-image-turbo-fp8-dynamic_lora` |
+| Z-Image-Turbo NVFP4 + LoRA — **RTX 5090** | `TheStageAI/Elastic-Z-Image-Turbo:models/GeForce-RTX-5090/z-image-turbo-nvfp4_lora` |
+| Z-Image-Turbo NVFP4 + FP4-attention + LoRA — **RTX 5090** (needs qlip fp4attn update) | `TheStageAI/Elastic-Z-Image-Turbo:models/GeForce-RTX-5090/z-image-turbo-nvfp4-fp4attn_lora` |
+| Z-Image-Turbo NVFP4 + FP4-attention, no LoRA — **RTX 5090** (needs qlip fp4attn update) | `TheStageAI/Elastic-Z-Image-Turbo:models/GeForce-RTX-5090/z-image-turbo-nvfp4-fp4attn-nolora` |
+| Z-Image-Turbo FP8-dynamic + LoRA — **B200** | `TheStageAI/Elastic-Z-Image-Turbo:models/B200/z-image-turbo-fp8-dynamic_lora` |
+| Z-Image-Turbo NVFP4 + LoRA — **B200** | `TheStageAI/Elastic-Z-Image-Turbo:models/B200/z-image-turbo-nvfp4_lora` |
+| Krea 2 Turbo FP8 + LoRA — **H200** (TensorRT 10.13, `nvidia` profile) | `TheStageAI/Elastic-Krea-2:models/H200/krea2-fp8_lora_trt_10_13` |
+| Krea 2 Turbo FP8 + LoRA — **H200** (TensorRT 10.15, legacy) | `TheStageAI/Elastic-Krea-2:models/H200/krea2-fp8_lora` |
 
 The format is `org/repo:path/to/engines`. Engines are downloaded once and cached.
 
@@ -1096,6 +1116,10 @@ Ready-to-use ComfyUI workflow files are in [`workflows/`](workflows/):
 | `z-image-turbo.json` | Z-Image-Turbo image generation | `048dd2f3` |
 | `video_ltx_2_3_t2v-qlip.json` | LTX-Video 2.3 22B text-to-video | `b615af1c` |
 | `qwen-image-edit.json` | Qwen Image Edit | `b615af1c` |
+| `video_wan2_2_14B_i2v-qlip.json` | Wan 2.2 I2V 14B, two experts (H100) | `b615af1c` |
+| `video_wan2_2_14b_i2v_5090-qlip.json` | Wan 2.2 I2V 14B, one expert + low→high LoRA (RTX 5090) | `b615af1c` |
+| `flux_klein_edit.json` | FLUX.2 Klein image edit (RTX 5090 / B200 engines) | `b615af1c` |
+| `z-image-turbo-5090.json` | Z-Image-Turbo (RTX 5090 / B200 engines) | `b615af1c` |
 
 Model download scripts are in [`scripts/`](scripts/):
 
@@ -1105,7 +1129,8 @@ Model download scripts are in [`scripts/`](scripts/):
 | `download_ltx_2_models.sh` | LTX-2 19B (checkpoints, text encoder, LoRAs, upscaler) |
 | `download_z_image_turbo_models.sh` | Z-Image-Turbo (diffusion model, text encoder, VAE, LoRA) |
 | `download_ltx_2_3_models.sh` | LTX-Video 2.3 22B (checkpoint, Gemma text encoder, LoRAs, upscaler) |
-| `download_qwen_image_edit_models.sh` | Qwen Image Edit (diffusion model, text encoder, LoRA) |
+| `download_qwen_image_edit.sh` | Qwen Image Edit (diffusion model, text encoder, LoRA) |
+| `download_wan_i2v_models.sh` | Wan 2.2 I2V 14B (high- and low-noise experts, text encoder, CLIP vision, VAE, lightx2v 4-step LoRAs) |
 
 To download models for a specific workflow:
 
@@ -1119,7 +1144,8 @@ bash custom_nodes/ComfyUI-Qlip/scripts/download_z_image_turbo_models.sh
 
 # New models (ComfyUI b615af1c)
 bash custom_nodes/ComfyUI-Qlip/scripts/download_ltx_2_3_models.sh
-bash custom_nodes/ComfyUI-Qlip/scripts/download_qwen_image_edit_models.sh
+bash custom_nodes/ComfyUI-Qlip/scripts/download_qwen_image_edit.sh
+bash custom_nodes/ComfyUI-Qlip/scripts/download_wan_i2v_models.sh
 ```
 
 Scripts skip already-downloaded files, so they are safe to re-run. Override the HuggingFace cache location with `HF_HUB_CACHE` if needed.

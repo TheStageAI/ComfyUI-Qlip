@@ -580,7 +580,7 @@ class QlipEnginesLoader:
             weights; the packages read the patched weights, no rebuild."""
         import time as _time
 
-        from qlip.inference.loom import export as lx
+        from qlip.inference.inductor import workspace as lx
 
         from ..utils import lora_peft
 
