@@ -2541,7 +2541,7 @@
       },
       "widgets_values": [
         "",
-        "TheStageAI/Elastic-LTX-2.3:models/H100/ltx-2.3-22b-distilled-fp8_lora",
+        "TheStageAI/Elastic-LTX-2.3:models/H100/ltx-2.3-22b-distilled-fp8-t2v_lora",
         ""
       ]
     }

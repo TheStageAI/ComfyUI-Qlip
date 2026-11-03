@@ -1,15 +1,20 @@
---extra-index-url https://thestage.jfrog.io/artifactory/api/pypi/pypi-thestage-ai-production/simple
-qlip.core[nvidia]
-diffusers==0.37.1
-triton
-cupy-cuda12x==13.3.0
-cuda-python==12.8.0
-tensorrt-cu12==10.13.3.9
-tensorrt-cu12-bindings==10.13.3.9
-tensorrt-cu12-libs==10.13.3.9
-torch==2.9.1
-torchvision==0.24.1
-torchaudio==2.9.1
-# TheStage CLI — needed once to set the access token (Step 3 of the README):
-#   thestage config set --access-token <YOUR_API_TOKEN>
-thestage
+# ComfyUI-Qlip — device-agnostic deps ONLY.
+#
+# This file is intentionally thin: it lists only packages that are safe on ANY
+# device and can NOT move your torch build. Comfy Manager auto-installs this file
+# when you `comfy node install comfyui-qlip`, so it must never drag in a CUDA
+# stack or a specific torch — that used to overwrite the device torch and break
+# the engines.
+#
+# The device-specific stack (torch build, TensorRT, CuPy, qlip.core) lives in
+# pyproject.toml extras and is installed by the device-aware installer:
+#
+#     python custom_nodes/ComfyUI-Qlip/install.py         # auto-detects device
+#     # or by hand:  pip install ".[nvidia]"  /  ".[blackwell]"  /  ".[thor]"
+#         --extra-index-url https://thestage.jfrog.io/artifactory/api/pypi/pypi-thestage-ai-staging/simple
+#
+# See README "Quick install".
+
+diffusers
+safetensors
+thestage        # CLI to set the TheStage access token

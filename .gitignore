@@ -1,5 +1,12 @@
-docs
+docs_internal
 .claude
 backup
 venv
 bench
+
+# Python / OS / IDE
+__pycache__/
+*.pyc
+.DS_Store
+.idea/
+/platform_hf
