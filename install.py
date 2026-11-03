@@ -132,7 +132,8 @@ def main():
             f"!! the blackwell profile needs Python 3.11+, this is "
             f"{sys.version.split()[0]} ({sys.executable})"
         )
-        sys.exit(1)
+        if not args.dry_run:
+            sys.exit(1)
     comfy_root = args.comfy_root or os.path.abspath(os.path.join(here, "..", ".."))
     pip = [sys.executable, "-m", "pip"]
 

@@ -1,1252 +1,146 @@
 # ComfyUI-Qlip
 
-GPU-accelerated inference for diffusion models in ComfyUI, powered by [Qlip](https://thestage.ai) from TheStage AI.
-
-Qlip compiles transformer blocks into optimized engines, delivering significant speedups with full runtime LoRA support. Engines are compiled once and reused across all inference runs.
-
 <p align="center">
-  <img src="assets/example_image.png" alt="ComfyUI-Qlip workflow example" width="700">
-  <br>
-  <em>FLUX.2 Klein 9B with LoRA in ComfyUI. Just add the Qlip Engines Loader and Qlip LoRA Stack nodes to any existing workflow — works with any supported model and any sampler, as long as the compiled engines support the required input shapes.</em>
+  <img src="assets/ComfyUI_Qlip.png" alt="ComfyUI-Qlip: 4 new nodes, 5.6× on Krea 2, 4× on MiniMax H3" width="800">
 </p>
 
-### Baseline vs Qlip — same output, much faster
-
-See for yourself: the baseline (eager PyTorch) and our Qlip engines produce
-almost the same image, but Qlip runs several times faster (NVFP4 + FP4-attention
-on RTX 5090).
-
-<table>
-  <tr>
-    <th>FLUX.2 Klein 9B — Baseline (BF16, 10.1 s)</th>
-    <th>FLUX.2 Klein 9B — Qlip (NVFP4 + FP4-attn, 2.8 s, 3.6×)</th>
-  </tr>
-  <tr>
-    <td><img src="assets/example_flux_klein_bf16.png" alt="FLUX.2 Klein baseline" width="380"></td>
-    <td><img src="assets/example_flux_klein_qlip_nvfp4.png" alt="FLUX.2 Klein Qlip NVFP4" width="380"></td>
-  </tr>
-  <tr>
-    <th>Z-Image-Turbo 6B — Baseline (eager, 2.3 s)</th>
-    <th>Z-Image-Turbo 6B — Qlip (NVFP4 + FP4-attn, 0.9 s, 2.6×)</th>
-  </tr>
-  <tr>
-    <td><img src="assets/example_zimage_eager.png" alt="Z-Image-Turbo baseline" width="380"></td>
-    <td><img src="assets/example_zimage_qlip_nvfp4.png" alt="Z-Image-Turbo Qlip NVFP4" width="380"></td>
-  </tr>
-</table>
-
-## Updates
-
-**2026-08-04** — Four new acceleration nodes: sparse attention, caching, progressive resolution, managed compiler
-- **QlipAutoSparse** — one-knob int8 dynamic block-sparse attention on any DiT.
-  Blocks are picked per step by a **diversity selector** (similarity minus
-  redundancy); at 70% sparsity it holds dense-level quality (DOVER-checked).
-- **QlipCache** — step caching (EasyCache / TaylorSeer / HiCache predictors,
-  separate cache per CFG branch) plus a DBCache-style `block` mode that also
-  helps few-step distilled models.
-- **QlipProgressive** — early denoising steps on a downscaled latent with a
-  no-knobs `auto` ladder; handles nested multimodal latents (MiniMax H3
-  video+audio: video is downscaled, audio passes through).
-- **QlipCompile** (+ **QlipQuantConfig**) — per-block `torch.compile` with
-  optional **FP8/NVFP4** scaled GEMM: no ONNX export, cold start in seconds,
-  resolution changes without recompile, `weights_policy=release` for a big
-  VRAM cut.
-- The four axes stack multiplicatively and need no precompiled engines, so
-  they run on models released days ago: **5.58× on Krea-2 Turbo, 5.09× on
-  Z-Image-Turbo, 4.02× on the video+audio MiniMax H3** (all RTX 5090, vs
-  eager), **2.27× on non-distilled Wan 2.2** (H100).
-
-**2026-07-02** — Blackwell (RTX 5090 / B200) engines + Wan 2.2 low→high LoRA
-- **Blackwell engine rollout** — recompiled the lineup for Blackwell with **NVFP4
-  (FP4)** weights (~4× smaller than BF16, native Blackwell fast path) plus **FP4
-  attention** on the 5090:
-  - **FLUX.2 Klein 9B (edit)** — RTX 5090 (FP8-dynamic/static, NVFP4, NVFP4 + FP4-attn)
-    and B200 (FP8-dynamic, NVFP4). Up to **3.6×** over BF16 eager on the 5090.
-  - **Z-Image-Turbo 6B** — RTX 5090 and B200 (FP8-dynamic, NVFP4, NVFP4 + FP4-attn).
-  - **Wan 2.2 I2V 14B** — RTX 5090 (NVFP4, NVFP4 + FP4-attn), encrypted, LoRA-enabled.
-  See the [Blackwell benchmarks](#blackwell-engines-rtx-5090--b200) for the full tables.
-- **Wan 2.2 low→high LoRA** — we trained a LoRA that lets the Wan 2.2 low-noise
-  expert do the high-noise expert's job, collapsing the two-expert pipeline into a
-  **single transformer**. Measured **18.1 s/clip vs 38.1 s BF16 (~2.1×)** at
-  480×480 / 81 frames. Published as
-  [`wan2.2-i2v-low-to-high-lora.safetensors`](https://huggingface.co/TheStageAI/Elastic-Wan2.2-I2V/tree/main/models/GeForce-RTX-5090);
-  workflow `workflows/video_wan2_2_14b_i2v_5090-qlip.json`.
-- **Blackwell install** — the cu130-torch ordering (torch cu130 → ComfyUI
-  requirements under a constraints file → device stack → `qlip.core[blackwell]
-  --no-deps`) that works around the ComfyUI-installs-cu12-torch gotcha is now
-  automated by [`install.py`](#quick-install-recommended--one-command-device-aware)
-  (device stacks live in `pyproject.toml` extras). The **NVFP4** engines run on
-  today's `qlip.core[blackwell]`; the **FP4-attention** engines need the upcoming
-  `fp4attn` plugin update.
-
-**2026-04-15** — Wan 2.2 I2V + shared memory + runtime patches + API client
-- **Wan 2.2 I2V (14B)** — image-to-video, FP8 + LoRA, two-stage pipeline (high-noise + low-noise), dynamic shapes up to 640x640
-- **Shared memory** — new `shared_memory` parameter in QlipEnginesLoader. Multiple loaders with the same group name share one GPU memory pool (size = max, not sum). Enables Wan 2.2 two-transformer setup without doubling VRAM
-- **Custom model patches** (`qlip_patch.py`) — place `qlip_patch.py` next to engine files, auto-loaded at runtime. Supports `patch_signatures(dm)` and `patch_caller(dm)` hooks
-- **LTX-Video 2.3 (22B)** — text-to-video, FP8 distilled + LoRA, dynamic shapes 512px–1408px, 9–121 frames
-- **Qwen Image Edit** — image editing, BF16 + LoRA, dynamic shapes (512px–1536px), reference image support
-
-## Table of Contents
-
-- [How It Works](#how-it-works)
-- [Nodes at a Glance](#nodes-at-a-glance)
-- [Supported Models](#supported-models)
-- [Benchmarks](#benchmarks)
-- [Installation](#installation)
-- [Precompiled Engines](#precompiled-engines)
-- [Pricing](#pricing)
-- [Nodes](#nodes)
-- [Workflows](#workflows)
-- [LoRA Details](#lora-details)
-- [Compiling New Models](#compiling-new-models)
-- [Troubleshooting](#troubleshooting)
-
-## How It Works
-
-- **Compilation**: Compiles PyTorch transformer blocks into fused engines with optimized kernels
-- **Dynamic FP8 Quantization**: On-the-fly FP8 quantization reduces memory ~2x while maintaining quality
-- **Dynamic LoRA as Input Tensors**: LoRA weights are runtime inputs — hot-swap without recompilation
-- **Weight Streaming**: Large models stream weights from CPU/disk, reducing GPU memory requirements
-- **Dynamic Shapes**: Single compiled engine supports a range of input resolutions
-
-## Nodes at a Glance
-
-The nodes fall into three roles. **Model-definition** nodes set up your fast baseline (leave them in place); **acceleration** nodes are the per-config levers you sweep (each has an `enable` toggle, so one workflow serves both baseline and every candidate); **measurement** nodes only report. Splice the acceleration hooks into the `MODEL` line between the loader and the sampler, in the order `QlipAutoSparse → QlipCompile → QlipCache → QlipProgressive`. Full parameter tables are in [Nodes](#nodes).
-
-| Node | Role | What it does | Main knob |
-|------|------|--------------|-----------|
-| **QlipEnginesLoader** | baseline | Loads a pre-compiled `.qlip`/`.engine` and swaps in the blocks at runtime | `engines_path` / `hf_repo` |
-| **QlipCompile** (+ **QlipQuantConfig**) | baseline | Compiles the model on the fly (no ONNX/engine build), optional FP8/NVFP4 | `quantize` |
-| **QlipLoraStack** / **QlipLoraSwitch** | baseline | Chain LoRA files; enable/disable at runtime without reloading | `lora_path` / `enable` |
-| **QlipCache** | acceleration | Skips whole denoising steps (or middle blocks) by predicting slow-moving output — best on many-step models | `threshold` (higher = faster) |
-| **QlipAutoSparse** | acceleration | Int8 dynamic block-sparse attention on any DiT — best where attention dominates (hi-res video, long+audio) | `sparsity` (0.5/0.7/0.9) |
-| **QlipProgressive** | acceleration | Runs early steps on a downscaled latent — best on high-res image | `low_scale` / `switch_mode` |
-| **QlipTokenPrune** | acceleration | Drops the least-important tokens (video); orthogonal to sparse, they stack | `keep_ratio` |
-| **QlipDrafter** | acceleration | Self-speculative sparse draft of the step (video) | `split_step` / `sparsity` |
-| **QlipTimer Start/Stop/Report**, **QlipCacheReport** | measurement | Time a node span; report cache real-vs-skipped steps | — |
-
-Amdahl guide: image → resolution dominates (`QlipProgressive` leads, attention levers capped); video → attention dominates (`QlipAutoSparse`/`QlipTokenPrune`/`QlipDrafter` lead). `QlipCache` is orthogonal and scales with step count, not resolution — strongest on 20–50-step base models, weak on 4–8-step distilled ones. The best result is usually a **combination** of two orthogonal levers (e.g. cache + progressive on image, sparse + cache on video). Don't want to tune by hand? The [QLIP Agent](#qlip-agent--auto-tune-your-model-to-the-best-speedquality-config) sweeps it all for you.
-
-## QLIP Agent — auto-tune your model to the best speed/quality config
-
-**Stop guessing which knobs to turn.** ComfyUI-Qlip ships a lot of acceleration levers —
-progressive resolution, step caching, sparse attention, drafting, token pruning,
-compilation. Finding the combination that makes *your* model fast without visibly hurting
-quality is a tedious sweep. The **QLIP Agent** does that sweep for you.
-
-Point a coding agent (Claude Code / Codex / Cursor) at **[`AGENTS.md`](AGENTS.md)** and it:
-
-- **reads your ComfyUI nodes live** (every Qlip node + its parameters), so it always
-  knows the current knobs — new nodes are picked up automatically;
-- **searches to frontier saturation** — not a fixed list: it covers every lever's axes,
-  combines them, and keeps refining until the speed×quality frontier stops improving;
-- **judges every candidate with qlip-arena** on a fixed prompt suite — LPIPS fidelity
-  vs your eager baseline **and** a human-preference Elo, so a config is only accepted if
-  it's genuinely as good;
-- **hands you ready-to-run workflows** — `best_workflow.json` plus one for *every* point
-  on the frontier (max-speed, max-quality, balanced — you pick), a speed×quality chart
-  coloured by the judge's verdict (win/tie/lose vs eager), and a side-by-side collage so
-  you can *see* the quality, not just trust a number;
-- **tells you what is wrong with the configs it rejected** — the arena's degradation
-  report names the defect per config in physical units (blur in px, veil fraction,
-  grain, texture loss, ghosting, contour wobble, and two learned axes: contour halo and
-  edge ringing), says on how many prompts it appears, and shows the image + the defect
-  map that proves it. You pick a config knowing its trade-off, not just its LPIPS.
-
-**Validate any change yourself — three commands, no agent needed.** Generated a
-baseline and a few candidate configs on the same prompts and seeds (with
-`arena gen`, or any way you like — the arena only reads an output folder)? Then:
-
-```bash
-cd /path/to/qlip-arena
-python -m qlip_arena.cli collect  --name base --src out_base/        # once per run
-python -m qlip_arena.cli collect  --name fast --src out_fast/
-python -m qlip_arena.cli fpcharts --b base --a fast fast-2 --out report.html
-```
-
-`report.html` is self-contained: the quality ranking, a defect × config matrix in
-words (slight / noticeable / strong), a radar where outward = better, per-axis charts,
-one plain-words line per prompt, and the evidence images. Have only a folder of
-outputs and no baseline? `python -m qlip_arena.cli qdm --images out_fast/` prints a
-defect passport per image. Reading guide: qlip-arena's
-`docs/EVALUATE_YOUR_MODEL.md`, section "Picking the best accelerated config".
-
-It runs against a **local or remote** ComfyUI, and treats the qlip runtime as a black box
-— it only ever uses the exposed node parameters, so nothing about your licensed install
-leaks. One command in; a benchmarked, deployable workflow out.
-
-**Try it — hand your agent a goal like this:**
-
-> Read `custom_nodes/ComfyUI-Qlip/AGENTS.md` and follow it to find the best QLIP
-> acceleration config for my model. My ComfyUI is at `http://127.0.0.1:8188`, the
-> workflow is `my_workflow.json`, and I want max speedup while keeping quality within
-> LPIPS 0.3 of the original. Give me the recommended workflow, the full Pareto frontier
-> with the arena win/tie/lose verdicts, and a visual collage.
-
-The agent creates the baseline, runs the search, and returns a `report/` with the
-recommended `best_workflow.json`, per-point workflows, the frontier chart, the
-win/tie/lose verdict chart, and `collage.html`. See **[`AGENTS.md`](AGENTS.md)** for the
-full contract and **[`tools/`](tools/)** for the scripts it drives (`fit_spectrum.py`,
-`qlip_report.py`).
-
-## Supported Models
-
-| Model | Architecture | Parameters | Type | Precompiled Engines |
-|-------|-------------|------------|------|---------------------|
-| [**FLUX.2 Klein**](https://huggingface.co/black-forest-labs/FLUX.2-klein-9B) | Dual-stream DiT | 9B | Image | [TheStageAI/Elastic-FLUX-2-Klein](https://huggingface.co/TheStageAI/Elastic-FLUX-2-Klein) |
-| [**LTX-Video 2**](https://huggingface.co/Lightricks/LTX-2) (LTXAV) | Audio-Video DiT | 19B | Video | [TheStageAI/Elastic-LTX-2](https://huggingface.co/TheStageAI/Elastic-LTX-2) |
-| [**Z-Image-Turbo**](https://huggingface.co/Comfy-Org/z_image_turbo) | NextDiT (Lumina2) | 6B | Image | [TheStageAI/Elastic-Z-Image-Turbo](https://huggingface.co/TheStageAI/Elastic-Z-Image-Turbo) |
-| [**LTX-Video 2.3**](https://huggingface.co/Lightricks/LTX-2.3) (LTXAV) | Audio-Video DiT | 22B | Video (t2v) | [TheStageAI/Elastic-LTX-2.3](https://huggingface.co/TheStageAI/Elastic-LTX-2.3) |
-| [**Qwen Image Edit**](https://huggingface.co/Comfy-Org/Qwen_Image_Edit) | Joint DiT | 14B | Image Edit | [TheStageAI/Elastic-Qwen-Image-Edit](https://huggingface.co/TheStageAI/Elastic-Qwen-Image-Edit) |
-| [**Wan 2.2 I2V**](https://github.com/Wan-Video/Wan2.2) | DiT | 14B | Video (i2v) | [TheStageAI/Elastic-Wan2.2-I2V](https://huggingface.co/TheStageAI/Elastic-Wan2.2-I2V) |
-| [**Krea 2 Turbo**](https://huggingface.co/krea/Krea-2-Turbo) | Single-stream DiT | — | Image | [TheStageAI/Elastic-Krea-2](https://huggingface.co/TheStageAI/Elastic-Krea-2) |
-
-More models coming soon — stay tuned for updates.
-
-> **Note:** LTX-Video 2.3, Qwen Image Edit, Wan 2.2 I2V and Krea 2 require a specific ComfyUI version and custom node setup. See each model's HuggingFace repo for installation instructions and compatible ComfyUI commit.
-
-### Model Details
-
-#### FLUX.2 Klein (9B)
-
-Image generation model. Compiled with separate engines for **distilled** and **base** variants.
-
-| Variant | CFG | Batch | Steps | Static Sizes | Dynamic Range |
-|---------|-----|-------|-------|-------------|---------------|
-| 9B **distilled** | 1.0 | 1 | 4 | 1024x1024, 1024x864 | 512px — 768px — 1024px |
-| 9B **base** | 3.5 | 2 | 50 | 1024x1024, 1024x864 | 512px — 768px — 1024px |
-
-Distilled and base models require separate engines (different batch sizes). Dynamic range supports any resolution from 512x512 to 1024x1024 (including non-square). Static profiles provide optimal performance at the listed sizes.
-
-> **H100 vs Blackwell — different mode.** The H100 engines above are plain
-> **text-to-image** generation. The **Blackwell** FLUX.2 Klein engines (RTX 5090 +
-> B200) are compiled in **image-edit mode** (`--edit --max-ref-images 1`): they
-> accept one reference image/latent in addition to the prompt, so `img_seq_len`
-> carries the extra ref tokens. Use the edit workflow with these engines (a
-> text-only graph won't supply the reference-latent input the engine expects).
-
-#### LTX-Video 2 (19B)
-
-Audio-video generation model. Currently only the **distilled** variant is compiled (cfg=1.0, batch=1). Only **image-to-video (i2v)** workflow is supported.
-
-| Variant | CFG | Batch | Workflow | Static Sizes (WxHxFrames) | Dynamic Range |
-|---------|-----|-------|----------|--------------------------|---------------|
-| 19B **distilled** | 1.0 | 1 | i2v | 768x512x41, 1280x720x121, 1408x896x121 | 512px—768px—1408px, 41—121 frames |
-
-Video resolution and frame count are both dynamic. Audio tokens are computed automatically from the frame count.
-
-#### Z-Image-Turbo
-
-Image generation model. Compiled with cfg=1.0, batch=1, static sizes only.
-
-| CFG | Batch | Static Sizes |
-|-----|-------|-------------|
-| 1.0 (turbo) | 1 | 1024x1024, 1024x768, 768x1024 |
-
-#### LTX-Video 2.3 (22B)
-
-Text-to-video model. 22B full-scale LTXAV architecture with audio+video dual-stream attention. Compiled as t2v (text-to-video): LoRA-enabled **distilled** engines with dynamic shapes, batch 2.
-
-| Variant | CFG | Batch | Engine Type | Static Sizes (WxHxFrames) | Dynamic Range |
-|---------|-----|-------|-------------|--------------------------|---------------|
-| 22B distilled FP8 + LoRA | 1.0, 4.0 | 2 (fixed) | t2v | 768x512x41, 1280x720x121, 1408x896x121 | 512px—768px—1408px, 9—121 frames |
-
-The **distilled** engines have dynamic resolution and frame count (LoRA rank 1–256).
-
-#### Qwen Image Edit
-
-Image editing model. Takes a reference image + text prompt → generates edited image. Uses joint concat (txt+img → single sequence) with fixed text length padding.
-
-| Variant | CFG | Batch | Static Sizes | Dynamic Sizes | Ref Images |
-|---------|-----|-------|-------------|---------------|------------|
-| BF16 + LoRA | 1.0 | 1 | 768, 1024, 1328, 1536 | All WxH from {512, 768, 1024, 1328, 1536} | 1 |
-
-Text padded to 1536 tokens. Reference method: `index_timestep_zero`. LoRA rank 1–256. Requires `qlip_patch.py` in engines directory for inference.
-
-> **ComfyUI version:** LTX-Video 2.3, Qwen Image Edit, and Wan 2.2 I2V require ComfyUI commit **`b615af1c`** (newer than the default `048dd2f3` used for other models). Use `git checkout b615af1c` in your ComfyUI directory before running these models.
-
-#### Wan 2.2 I2V
-
-Image-to-video generation model. Two-stage pipeline: high-noise transformer generates initial video, low-noise transformer refines it. Both transformers are compiled separately. Uses `shared_memory` option in QlipEnginesLoader to share one GPU memory pool between the two transformers.
-
-| Variant | Transformer | CFG | Batch | Dynamic Sizes | Num frames |
-|---------|------------|-----|-------|---------------|------------|
-| FP8 + LoRA | High-noise | 1.0 | 1 | Up to 640x640 | 81         |
-| FP8 + LoRA | Low-noise | 1.0 | 1 | Up to 640x640 | 81         |
-
-Each transformer has its own engines directory and QlipEnginesLoader node. Set `shared_memory="wan"` on both loaders to share one GPU memory pool (reduces VRAM usage since the two transformers never run simultaneously).
-
-On the **RTX 5090** Wan 2.2 runs as a **single expert**: the low-noise transformer (NVFP4 + LoRA) plus our low→high LoRA, which takes over the high-noise expert's job. See [Wan 2.2 I2V — RTX 5090](#-wan-22-i2v-14b--rtx-5090).
-
-#### Krea 2 Turbo
-
-Image generation model, 8 steps, batch 1. FP8-static engines with runtime LoRA (rank up to 64), compiled on **H200**. Requires ComfyUI commit **`c2bcbecd`** (v0.32.0, the first version with Krea 2). Models: `krea2_turbo_bf16.safetensors`, `qwen3vl_4b_bf16.safetensors`, `qwen_image_vae.safetensors` and optional LoRAs from [Comfy-Org/Krea-2](https://huggingface.co/Comfy-Org/Krea-2).
-
-| Variant | Static Sizes | Dynamic Range | TensorRT |
-|---------|-------------|---------------|----------|
-| FP8 + LoRA (`krea2-fp8_lora_trt_10_13`) | 1536x1536, 1536x864, 864x1536, 1024x1024 | 256px — 1024px — 1536px | 10.13 (`nvidia` install profile) |
-| FP8 + LoRA (`krea2-fp8_lora`, legacy) | same | same | 10.15 |
-
-## Benchmarks
-
-All measurements: single image/video generation, batch size 1, H100, torch 2.8.0 (the numbers were measured on 2.8.0; the current `requirements.txt` pins torch 2.9.1 — engines run identically on it), **warm run** (second run, engines already loaded). Current precompiled engines include LoRA support, which adds minor overhead (~5-15%) compared to non-LoRA engines. Non-LoRA engines with faster inference will be available in a future release.
-
-### Image Generation (1024x1024, 20 steps for flux, 8 steps for z-image, cfg=1)
-
-| Model | Method | Time (s) | Speedup |
-|-------|--------|----------|---------|
-| **FLUX.2 Klein 9B** | Eager (PyTorch) | 3.743 | 1.0x |
-| | torch.compile ([KJNodes](https://github.com/kijai/ComfyUI-KJNodes)) | 3.064 | 1.22x |
-| | **Qlip BF16 + LoRA** | 2.944 | 1.27x |
-| | **Qlip FP8 + LoRA** | 2.215 | **1.69x** |
-| **Z-Image-Turbo** | Eager (PyTorch) | 1.142 | 1.0x |
-| | torch.compile ([KJNodes](https://github.com/kijai/ComfyUI-KJNodes)) | 0.999 | 1.14x |
-| | [SGLDiffusion](https://github.com/sgl-project/sglang/tree/main/python/sglang/multimodal_gen/apps/ComfyUI_SGLDiffusion) | 0.920 | 1.24x |
-| | **Qlip BF16 + LoRA** | 0.957 | 1.19x |
-| | **Qlip FP8 + LoRA** | 0.773 | 1.48x |
-| | **Qlip FP8 + Cache** | 0.565 | **2.02x** |
-
-### Video Generation (LTX-Video 2, 1280x720, 121 frames, 8 basic sampler steps + 3 upsampling steps)
-
-| Method | Time (s) | Speedup |
-|--------|----------|---------|
-| Eager (PyTorch) | 7.829 | 1.0x |
-| torch.compile ([KJNodes](https://github.com/kijai/ComfyUI-KJNodes)) | 5.330 | 1.47x |
-| **Qlip BF16 + LoRA** | 6.020 | 1.30x |
-| **Qlip FP8 + LoRA** | 5.051 | **1.55x** |
-
-### Video Generation (LTX-Video 2.3, 1280x720, 8 basic sampler steps + 3 upsampling steps, cfg 1.0, 121 frames, t2v, H100)
-
-Transformer pass time only (2nd run, warm). 22B model, FP8 + LoRA.
-
-| Method | Transformer Time (s) | Speedup |
-|--------|---------------------|---------|
-| Eager (PyTorch) | 15.188 | 1.0x |
-| **Qlip FP8 + LoRA** | 8.537 | **1.78x** |
-
-### Image Editing (Qwen Image Edit, cfg 1.0, 4 steps 1328x1328, H100)
-
-Transformer pass time only (2nd run, warm). 1 reference image.
-
-| Method | Transformer Time (s) | Speedup |
-|--------|---------------------|---------|
-| Eager (PyTorch) | 3.135 | 1.0x |
-| **Qlip BF16 + LoRA** | 2.389 | **1.31x** |
-
-### Video Generation (Wan 2.2 I2V, 640x640, 81 frames, 4 steps, cfg 1.0, H100)
-
-Transformer pass time only (2nd run, warm). Two-stage pipeline (high-noise + low-noise).
-
-| Method | Transformer Time (s) | Speedup |
-|--------|---------------------|---------|
-| Eager (PyTorch) | 18.573 | 1.0x |
-| **Qlip FP8 + LoRA** | 12.035 | **1.54x** |
-
-### Image Generation (Krea 2 Turbo, 1536x1536, 8 steps, H200)
-
-Sampler time, median of images 2–8 from `tools/krea_check.py` (8 prompts, LoRA switched after the 4th).
-
-| Method | Sampler Time (s) | Speedup |
-|--------|------------------|---------|
-| Eager (PyTorch) | 5.00 | 1.0x |
-| **Qlip FP8 + LoRA** (TensorRT 10.13) | 3.41 | 1.47x |
-| **Qlip FP8 + LoRA** (TensorRT 10.15) | 3.10 | 1.61x |
-| **Qlip FP8 + LoRA** (TensorRT 10.15) + QlipCache + QlipProgressive | 1.85 | **2.70x** |
-
-The TensorRT 10.13 engine was measured in a separate run on the same H200 setup.
-
-> All benchmarked engines include runtime LoRA support. LoRA adds ~5-15% overhead due to additional MatMul operations per layer. Faster non-LoRA engines will be available in a future update.
-
-### Blackwell engines (RTX 5090 / B200)
-
-Engines for **Blackwell**: RTX 5090 (sm_120a) and B200 (sm_100). New on Blackwell:
-**NVFP4 (FP4)** weights (~4× smaller than BF16, native fast path) in addition to FP8,
-plus FP4 attention on the 5090. Single image/video generation, batch size 1, warm run
-(engines already loaded), LoRA-enabled engines. FLUX.2 Klein is
-the **distilled** variant — **4 sampling steps** (distillation lets it converge in
-4 vs ~50 for the base model), cfg 1.0, batch 1; times are the full warm generation
-at 1024x2048.
-
-#### FLUX.2 Klein 9B (edit) — RTX 5090, 1024x2048 (distilled, 4 steps)
-
-| Method | Time (s) | Speedup |
-|--------|----------|---------|
-| Eager (PyTorch) | 10.144 | 1.0x |
-| **Qlip FP8-dynamic + LoRA** | 7.919 | 1.28x |
-| **Qlip FP8-static + LoRA** | 7.520 | 1.35x |
-| **Qlip NVFP4 + LoRA** | 6.058 | 1.67x |
-| **Qlip NVFP4 + FP4-attention + LoRA** | 3.299 | 3.07x |
-| **Qlip NVFP4 + FP4-attention (no LoRA)** | **2.810** | **3.61x** |
-
-> **LoRA overhead (measured).** `+ LoRA` engines carry runtime LoRA support (extra
-> per-layer MatMuls), and that cost is paid **even when no LoRA is applied** — the
-> engine still gets a zero-filled `lora_packed` tensor (LoRA is a compile-time graph
-> input). Direct measurement on the NVFP4 + FP4-attention engine:
-> **3.299 s (LoRA) → 2.810 s (no-LoRA) = −0.489 s (~15%)**. So a **no-LoRA engine is
-> always the fastest** for a given precision. Applying the same ~0.49 s delta as an
-> estimate, the no-LoRA floors for the other Klein engines would be roughly:
-> FP8-dynamic ≈ 7.43 s, FP8-static ≈ 7.03 s, NVFP4 ≈ 5.57 s (projected — only the
-> NVFP4+FP4-attn no-LoRA row is actually built/measured).
->
-> **We beat eager SageAttention3.** Eager NVFP4 `.safetensors` + SageAttention3 is
-> **3.226 s** (the fastest non-Qlip path). Our Qlip **NVFP4 + FP4-attention** engine
-> is **3.299 s with LoRA** (essentially on par despite carrying LoRA) and
-> **2.810 s without LoRA — ~13% faster than eager+SageAttention3**, at a **3.61×**
-> speedup over BF16 eager. (FP4 attention here is a dedicated `QlipFP4Attention`
-> plugin node that replaces the SDPA pattern; the block's Linears stay NVFP4.)
-
-#### Z-Image-Turbo 6B — RTX 5090
-
-| Method | Time (s) | Speedup |
-|--------|----------|---------|
-| Eager (PyTorch) | 2.333 | 1.0x |
-| **Qlip FP8-dynamic + LoRA** | 1.644 | 1.42x |
-| **Qlip NVFP4 + LoRA** | 1.143 | 2.04x |
-| **Qlip NVFP4 + FP4-attention + LoRA** | 1.017 | 2.29x |
-| **Qlip NVFP4 + FP4-attention (no LoRA)** | 0.884 | 2.64x |
-
-#### Reference: external NVFP4 `.safetensors` (eager, RTX 5090)
-
-Pre-quantized NVFP4 weight checkpoints run in **eager PyTorch** (not our Qlip
-engines) — a baseline to compare our engines against, measured once plain and once
-with **SageAttention3** (`sageattn3_blackwell`, the eager FP4 attention kernel for
-consumer Blackwell). Order: NVFP4 alone, then + SageAttention3.
-
-Checkpoints:
-- **FLUX.2 Klein 9B NVFP4** — [`black-forest-labs/FLUX.2-klein-9b-nvfp4`](https://huggingface.co/black-forest-labs/FLUX.2-klein-9b-nvfp4) (`flux-2-klein-9b-nvfp4.safetensors`, gated)
-- **Z-Image-Turbo SVDQuant FP4** — [`nunchaku-ai/nunchaku-z-image-turbo`](https://huggingface.co/nunchaku-ai/nunchaku-z-image-turbo) (`svdq-fp4_r128-z-image-turbo.safetensors`, `svdq-fp4_r32-z-image-turbo.safetensors`). These load **only via the nunchaku custom node + `nunchaku` runtime package** (SVDQuant diffusers-layout weights). A plain `UNETLoader` fails with `KeyError: noise_refiner.0.attention.to_k.weight` — the checkpoint stores unfused `to_q/to_k/to_v` while ComfyUI's Z-Image expects fused `attention.qkv`.
-
-**FLUX.2 Klein 9B NVFP4 (edit) — eager, 1024x2048 (distilled, 4 steps)**
-
-Speedup is vs the BF16 eager baseline (10.144s, top table).
-
-| Method | Time (s) | Speedup |
-|--------|----------|---------|
-| Eager NVFP4 `.safetensors` | 5.934 | 1.71x |
-| Eager NVFP4 `.safetensors` + SageAttention3 | 3.226 | 3.14x |
-| Eager NVFP4 `.safetensors` + SageAttention3 (compiled) | 3.262 | 3.11x |
-
-> Compiling the SageAttention3 op gives **no gain on Klein** (3.262 s vs 3.226 s —
-> within noise / slightly worse), unlike Z-Image where it helps (see below). "compiled"
-> = `torch.compile` on the SageAttention3 op only, not the whole model.
-
-> The SageAttention3 rows use the eager `sageattn3` kernel (and base
-> `sageattention` for the KJNodes `Patch Sage Attention KJ` path) on consumer
-> Blackwell — built from source per the SageAttention repo. These are an external
-> eager baseline, separate from the Qlip engines.
-
-**Z-Image-Turbo SVDQuant FP4 (r128) — eager**
-
-Speedup is vs the BF16 eager baseline (2.333s, Z-Image table above).
-
-| Method | Time (s) | Speedup |
-|--------|----------|---------|
-| Eager SVDQuant FP4 `.safetensors` | 0.988 | 2.36x |
-| Eager SVDQuant FP4 `.safetensors` + SageAttention3 | 0.951 | 2.45x |
-| Eager SVDQuant FP4 `.safetensors` + SageAttention3 (compiled) | 0.842 | 2.77x |
-
-> "compiled" = `torch.compile` applied to the **SageAttention3 attention op only**
-> (its `allow_compile` path), not the whole model.
-
-#### 🎬 Wan 2.2 I2V (14B) — RTX 5090
-
-**Real-time-class image-to-video on a single consumer card.** Wan 2.2 I2V is a
-two-expert pipeline — a **high-noise** transformer sketches the motion, a
-**low-noise** transformer refines it. We trained a LoRA that lets the **low-noise
-expert do the high-noise expert's job**, collapsing the pipeline so you run a
-single transformer and still get full-quality motion. That low→high LoRA is applied
-at runtime on top of our Qlip engine, and the whole thing is compiled to
-**NVFP4 + FP4-attention**: a full 20-clip run averaged **18.1 s/clip vs 38.1 s/clip**
-for the same model in BF16 eager — a **~2.1×** speedup, on a 32 GB RTX 5090 (the
-14B fits with headroom at FP4; BF16 fits too, but at half the speed).
-
-| Prompt (480×480, 81 frames, cfg 1.0) | Time / clip | Speedup |
-|---|---|---|
-| BF16 + LoRA (eager PyTorch) | 38.1 s | 1.0× |
-| **Qlip NVFP4 + FP4-attention + LoRA** | **18.1 s** | **2.1×** |
-
-_Median per-clip wall-time over a fixed 20-prompt batch (full pipeline: sampler +
-VAE decode + save), warm run, cold-start clip excluded._
-
-**Workflow:** [`workflows/video_wan2_2_14b_i2v_5090-qlip.json`](workflows/video_wan2_2_14b_i2v_5090-qlip.json)
-— load it in ComfyUI, point the `QlipEnginesLoader` at one of the engines below (or
-set `hf_repo`), and it already loads our low→high LoRA
-([`wan2.2-i2v-low-to-high-lora.safetensors`](https://huggingface.co/TheStageAI/Elastic-Wan2.2-I2V/blob/main/models/GeForce-RTX-5090/wan2.2-i2v-low-to-high-lora.safetensors))
-via the `QlipLoraStack`.
-
-**Two engine variants — pick by what you need today:**
-
-- **NVFP4 + FP4-attention** (the 18.1 s number above) — fastest, but the
-  `QlipFP4Attention` plugin node requires an updated `qlip` release. **These
-  engines cannot be used yet** — they will load once the plugin ships in a public
-  `qlip` update. See [FP4-attention plugin](#required-for-fp4-attention-engines-build-the-fp4attn-plugin--rtx-5090-only)
-  below.
-- **NVFP4 (no FP4-attention)** — **ready to use right now** with the current
-  `qlip.core[blackwell]`, no plugin build required. Slightly slower than the
-  FP4-attention variant but needs nothing extra, and still a large win over BF16.
-
-#### FLUX.2 Klein 9B (edit) — B200
-
-| Method | Time (s) | Speedup |
-|--------|----------|---------|
-| Eager (PyTorch) | 2.05 | 1.0x |
-| **Qlip FP8-dynamic + LoRA** | 1.59 | 1.29x |
-| **Qlip NVFP4 + LoRA** | 1.27 | 1.61x |
-
-#### Z-Image-Turbo 6B — B200
-
-| Method | Time (s) | Speedup |
-|--------|----------|---------|
-| Eager (PyTorch) | 0.611 | 1.0x |
-| **Qlip FP8-dynamic + LoRA** | 0.493 | 1.24x |
-| **Qlip NVFP4 + LoRA** | 0.435 | 1.40x |
-
-> Routing: **≤14B → 5090, ≥19B → B200**. **FLUX.2 Klein on Blackwell is built in
-> image-edit mode** (`--edit --max-ref-images 1`) — unlike the H100 engines, which
-> are plain text-to-image (use the edit workflow with the Blackwell Klein engines).
-> **LTX-2 (i2v) and LTX-2.3 (t2v) are both kept** — different tasks, not redundant.
-> **Wan 2.2 on Blackwell is RTX 5090 only** (single expert, see above). FP4 attention
-> is **5090-only** (the SageAttention3 kernel targets sm_120a; B200 keeps FP8/BF16
-> attention). Blackwell engines live under `models/GeForce-RTX-5090/` and
-> `models/B200/` in each repo — see [Precompiled Engines](#precompiled-engines).
-
-> **⚠ ComfyUI commit for ALL Blackwell engines — `b615af1c`.** Unlike the H100
-> engines (which use a mix of `048dd2f3` for FLUX.2 Klein / LTX-2 / Z-Image and
-> `b615af1c` for LTX-2.3 / Qwen / Wan), **every Blackwell engine — on both the
-> RTX 5090 and the B200 — is compiled against ComfyUI `b615af1c`**, including
-> FLUX.2 Klein and Z-Image-Turbo. Engines are tied to the ComfyUI block structure,
-> so to run a Blackwell engine you must `git checkout b615af1c` in your ComfyUI
-> (it is backwards-compatible with the older models). Compile and inference must use
-> the same commit. _(Verified on the 5090 build pod: `v0.18.1-53-gb615af1c`.)_
-
-## Installation
-
-### Prerequisites
-
-- Python 3.10+ (Hopper / Ada); **Python 3.11+ for Blackwell** — the `blackwell` profile pins `numpy==2.4.6`, which needs 3.11
-- NVIDIA GPU — Hopper / Ada (CUDA 12) or Blackwell RTX 5090 / B200 (CUDA 13)
-- ComfyUI installed and working (see below if starting from scratch)
-
-### Quick install (recommended) — one command, device-aware
-
-The tricky part of installing Qlip alongside ComfyUI is the **torch build**:
-ComfyUI, your GPU, and qlip can each want a different one in the same venv, and a
-stray `pip install` silently swaps it and breaks the CUDA engines. The installer
-handles all of it — it **detects your device**, installs the right torch first,
-then ComfyUI's requirements under a constraints file (so torch stays put), then the
-matching `qlip.core` extra.
-
-```bash
-# 1. clone the node into ComfyUI (from your ComfyUI root, venv active):
-git clone https://github.com/TheStageAI/ComfyUI-Qlip custom_nodes/ComfyUI-Qlip
-
-# 2. one command — auto-detects nvidia / blackwell:
-python custom_nodes/ComfyUI-Qlip/install.py
-
-# 3. set your TheStage token (needed for engine access):
-thestage config set --access-token <YOUR_API_TOKEN>
-```
-
-Force a profile or preview the plan:
-
-```bash
-python custom_nodes/ComfyUI-Qlip/install.py --device blackwell   # skip detection
-python custom_nodes/ComfyUI-Qlip/install.py --dry-run            # print, install nothing
-```
-
-Verify:
-
-```bash
-python -c "import torch, qlip; print('torch', torch.__version__); print('qlip OK')"
-```
-
-Prefer to do it by hand (or debugging a step)? The full manual sequence is below.
-
-### Step 1: Install ComfyUI-Qlip nodes
-
-> **ComfyUI version matters.** Different models require different ComfyUI commits:
-> - FLUX.2 Klein, LTX-Video 2, Z-Image-Turbo → commit **`048dd2f3`** (default below)
-> - LTX-Video 2.3, Qwen Image Edit, Wan 2.2 I2V, all Blackwell engines → commit **`b615af1c`** (newer)
-> - Krea 2 → commit **`c2bcbecd`** (ComfyUI v0.32.0, the first version with Krea 2)
->
-> Check the model's HuggingFace repo for the exact commit. If you need several of the first two groups, use `b615af1c` — it is backwards-compatible with the older models.
-
-> **⚠️ Blackwell (RTX 5090 / B200):** ComfyUI's own `requirements.txt` installs a
-> **CUDA-12** torch that would overwrite the **cu130** torch the FP4 engines need.
-> **Don't run ComfyUI's `requirements.txt` by hand on Blackwell** — let
-> [`install.py`](#quick-install-recommended--one-command-device-aware) do it: it
-> installs cu130 torch first, then ComfyUI's requirements under a constraints file
-> that keeps torch pinned. On H100 / Ada (CUDA 12) it doesn't matter either way.
-
-**From scratch** (no ComfyUI yet):
-
-> **Do NOT run `pip install -r requirements.txt` for ComfyUI yourself.** The
-> installer in the last step does it for you — with torch pinned so ComfyUI's
-> unpinned `torch` line can't overwrite your device build. Running it by hand
-> (especially on Blackwell) is exactly what breaks the engines.
+**Make diffusion models in ComfyUI 2–5× faster. Keep your workflow, keep your image.**
+
+ComfyUI-Qlip adds a few nodes to an existing ComfyUI workflow and runs the model's transformer
+on optimized engines (FP8, NVFP4, FP4 attention) or speeds it up on the fly. Your sampler, your
+LoRAs and your prompts stay the same. It is powered by [Qlip](https://thestage.ai) from
+TheStage AI.
+
+| FLUX.2 Klein 9B — Baseline (BF16, 10.1 s) | FLUX.2 Klein 9B — Qlip (NVFP4 + FP4-attn, 2.8 s, **3.6×**) |
+|---|---|
+| <img src="assets/example_flux_klein_bf16.png" alt="FLUX.2 Klein baseline" width="380"> | <img src="assets/example_flux_klein_qlip_nvfp4.png" alt="FLUX.2 Klein Qlip NVFP4" width="380"> |
+| **Z-Image-Turbo 6B — Baseline (eager, 2.3 s)** | **Z-Image-Turbo 6B — Qlip (NVFP4 + FP4-attn, 0.9 s, 2.6×)** |
+| <img src="assets/example_zimage_eager.png" alt="Z-Image-Turbo baseline" width="380"> | <img src="assets/example_zimage_qlip_nvfp4.png" alt="Z-Image-Turbo Qlip NVFP4" width="380"> |
+
+Both pairs were measured on an RTX 5090.
+
+## Why ComfyUI-Qlip
+
+- **Drop-in.** Add one node between the model loader and the sampler. Any sampler works.
+- **Fast on the GPUs you have.** Engines for H100 / H200, RTX 5090 and B200, including NVFP4 and
+  FP4 attention on Blackwell.
+- **LoRA without recompiling.** LoRA is a runtime input: switch or stack LoRAs between runs.
+- **Works on brand-new models.** The acceleration nodes need no precompiled engine, so they work on
+  a model released yesterday.
+- **Stackable.** Engines, caching, progressive resolution and sparse attention combine.
+
+## Speedups at a glance
+
+| Model | GPU | Speedup vs eager | How |
+|---|---|---|---|
+| Krea 2 Turbo | RTX 5090 | **5.58×** | acceleration nodes |
+| Z-Image-Turbo 6B | RTX 5090 | **5.09×** | acceleration nodes |
+| MiniMax H3 (video + audio) | RTX 5090 | **4.02×** | acceleration nodes |
+| FLUX.2 Klein 9B (edit) | RTX 5090 | **3.61×** | engine, NVFP4 + FP4 attention |
+| Krea 2 Turbo | H200 | **2.70×** | engine FP8 + `QlipCache` + `QlipProgressive` |
+| Wan 2.2 I2V 14B | RTX 5090 | **2.1×** | engine NVFP4 + FP4 attention, single expert |
+| LTX-Video 2.3 22B | H100 | **1.78×** | engine FP8 |
+
+Setups and the full tables: [Benchmarks](docs/benchmarks.md).
+
+## Quick start
+
+You need an NVIDIA GPU (Hopper / Ada, or Blackwell RTX 5090 / B200), Python 3.10+ (**3.11+ on
+Blackwell**) and a TheStage token from [app.thestage.ai](https://app.thestage.ai).
 
 ```bash
 git clone https://github.com/comfyanonymous/ComfyUI.git
 cd ComfyUI
-git checkout 048dd2f3  # or b615af1c for LTX-2.3 / Qwen Image Edit / Wan 2.2
-python3 -m venv venv
-source venv/bin/activate
-pip install --upgrade pip
+git checkout b615af1c        # the commit your engines need, see docs/installation.md
+python3 -m venv venv && source venv/bin/activate
 
-# clone the node:
 git clone https://github.com/TheStageAI/ComfyUI-Qlip custom_nodes/ComfyUI-Qlip
-
-# this ONE command installs everything: device torch, ComfyUI's own
-# requirements (torch-pinned via a constraints file), the CUDA stack, and qlip.
-python custom_nodes/ComfyUI-Qlip/install.py
-```
-
-**Existing ComfyUI** — activate your venv and clone:
-```bash
-source /path/to/ComfyUI/venv/bin/activate
-cd /path/to/ComfyUI/custom_nodes
-git clone https://github.com/TheStageAI/ComfyUI-Qlip
-```
-
-> If ComfyUI-Qlip is published to the Comfy Registry, you can also install via `comfy node install comfyui-qlip`.
-
-### Step 2: Install Qlip dependencies
-
-**Use the installer** (recommended — see [Quick install](#quick-install-recommended--one-command-device-aware) above):
-
-```bash
-python custom_nodes/ComfyUI-Qlip/install.py    # auto-detects your device
-```
-
-It installs the right torch first, ComfyUI's requirements under a constraints
-file (so torch can't be moved), then the matching device requirements file
-(`requirements_nvidia.txt` / `requirements_blackwell.txt`) + `qlip.core`.
-
-**Or install by hand.** The device stack for each GPU is in its own requirements
-file (`requirements_nvidia.txt` / `requirements_blackwell.txt`). Install torch
-FIRST (from PyTorch's index — the `+cuXXX` build isn't on PyPI), then the device
-requirements. From the ComfyUI root, with the venv active:
-
-**Hopper / Ada (CUDA 12):**
-```bash
-pip install torch==2.9.1 torchvision==0.24.1 torchaudio==2.9.1 \
-    --index-url https://download.pytorch.org/whl/cu128
-printf 'torch==2.9.1\ntorchvision==0.24.1\ntorchaudio==2.9.1\n' > /tmp/keep.txt
-pip install -r requirements.txt -c /tmp/keep.txt            # ComfyUI's own
-pip install -r custom_nodes/ComfyUI-Qlip/requirements_nvidia.txt -c /tmp/keep.txt
-```
-
-**Blackwell 5090 / B200 (CUDA 13)** — torch cu130 first, then the device file,
-then qlip with `--no-deps` last (its metadata would otherwise pull a cu12 torch
-over your cu130 build):
-```bash
-pip install --pre torch==2.12.0 torchvision==0.27.0 \
-    --index-url https://download.pytorch.org/whl/cu130
-printf 'torch==2.12.0+cu130\ntorchvision==0.27.0\ntorchaudio==2.11.0\nnumpy==2.4.6\n' > /tmp/keep.txt
-pip install -r requirements.txt -c /tmp/keep.txt            # ComfyUI's own
-pip install -r custom_nodes/ComfyUI-Qlip/requirements_blackwell.txt -c /tmp/keep.txt
-pip install "qlip.core[blackwell]" --no-deps \
-    --extra-index-url https://thestage.jfrog.io/artifactory/api/pypi/pypi-thestage-ai-staging/simple
-```
-
-The installer does exactly this ordering for you — prefer it unless you're
-debugging a step.
-
-Verify (after setting the token, [Step 3](#step-3-setup-thestage-api-token) — `import qlip` needs it):
-
-```bash
-python -c "import torch, tensorrt, qlip; \
-  print('torch', torch.__version__); print('trt', tensorrt.__version__); print('qlip OK')"
-# Blackwell expect: torch 2.12.0+cu130 · trt 10.15.1.29 · qlip OK
-```
-
-> **Expected pip warning on Blackwell.** After the `--no-deps` qlip step, a later
-> `pip install` in this venv may print `ERROR: ... qlip-core requires cvxpy /
-> Cython / scikit-learn / thop, which are not installed`. It is **benign for
-> inference** — those back qlip's model-analysis tooling (ANNA), not the engine
-> runtime. Ignore it, or `pip install cvxpy Cython scikit-learn thop` to silence.
-
-### Step 3: Setup TheStage API token
-
-Get your token at [app.thestage.ai](https://app.thestage.ai). Required for Qlip engine access.
-
-The installer already installs the `thestage` CLI, so you only need to set the token:
-
-```bash
+python custom_nodes/ComfyUI-Qlip/install.py              # detects your GPU, installs everything
 thestage config set --access-token <YOUR_API_TOKEN>
-```
 
-> **No token looks like a broken install, but it isn't.** Without a valid token
-> `import qlip` fails with `RuntimeError: [PyArmor] Validation failed`, and engine
-> loading may report `Nvidia support is not available`. Set the token and retry; do
-> not reinstall qlip.
-
-### (Optional) Download models
-
-If you don't have the required models yet, use the download scripts from [`scripts/`](scripts/):
-
-```bash
-export COMFYUI_PATH=/path/to/ComfyUI
-
-# Original models (ComfyUI commit 048dd2f3)
-bash custom_nodes/ComfyUI-Qlip/scripts/download_z_image_turbo_models.sh
-bash custom_nodes/ComfyUI-Qlip/scripts/download_ltx_2_models.sh
-bash custom_nodes/ComfyUI-Qlip/scripts/download_flux_klein_models.sh
-
-# New models (ComfyUI commit b615af1c)
-bash custom_nodes/ComfyUI-Qlip/scripts/download_ltx_2_3_models.sh
-bash custom_nodes/ComfyUI-Qlip/scripts/download_qwen_image_edit.sh
-bash custom_nodes/ComfyUI-Qlip/scripts/download_wan_i2v_models.sh
-```
-
-FLUX.2 Klein is a gated model — requires a Hugging Face login (`hf auth login`, or set `HF_TOKEN`; the old `huggingface-cli login` is deprecated) and license acceptance. Override the HuggingFace cache location with `HF_HUB_CACHE` if needed. Scripts skip already-downloaded files.
-
-### Step 4: Launch ComfyUI
-
-```bash
 python main.py --listen 0.0.0.0 --port 8188
 ```
 
-> Always activate the same venv before launching: `source venv/bin/activate`
+Then open a workflow from [`workflows/`](workflows/), for example `z-image-turbo-5090.json` on an
+RTX 5090, and press **Queue**. The engine downloads on the first run.
 
-### (Optional) Additional custom nodes for benchmarking
+> Do not run ComfyUI's own `pip install -r requirements.txt` yourself: on Blackwell it replaces the
+> CUDA 13 torch the engines need. `install.py` installs it with torch pinned.
 
-```bash
-cd /path/to/ComfyUI/custom_nodes
+Already have ComfyUI, need another commit, or want to install by hand? See
+[Installation](docs/installation.md).
 
-# KJNodes — provides torch.compile node for comparison benchmarks
-git clone https://github.com/kijai/ComfyUI-KJNodes
+## Two ways to accelerate
 
-# SGLDiffusion — SGLang-based acceleration (Z-Image-Turbo, FLUX Klein)
-git clone https://github.com/sgl-project/ComfyUI_SGLDiffusion
-pip install "sglang[diffusion]"
-```
+### 1. Precompiled engine: the fastest path for supported models
 
-### 6. (Optional) Flash Attention for Hopper GPUs
-
-```bash
-pip install flash-attn --no-build-isolation
-```
-
-### (Required for FP4-attention engines) Build the `fp4attn` plugin — RTX 5090 only
-
-> ⚠️ **FP4-attention engines are not usable yet — wait for the next `qlip`
-> release.** The `QlipFP4Attention` plugin node they contain depends on a version
-> of the `fp4attn` plugin that is **not yet in a public `qlip` update**. Until that
-> update ships, any `…-fp4attn…` engine **will fail to load**. If you need Blackwell
-> speedups today, use the **plain NVFP4 (no FP4-attention)** engines — they run on
-> the current `qlip.core[blackwell]` with **no plugin build required** and are ready to
-> use now. The instructions below are how you build the plugin **once the qlip
-> update lands**.
-
-> **Extra step — read this once fp4-attention is supported.** FP4-attention
-> engines contain a `QlipFP4Attention` plugin node. Unlike plain FP8/NVFP4 engines
-> (which load with just `qlip.core`), an fp4-attention engine **will not
-> load** until the `fp4attn` plugin is available — the loader raises an actionable
-> error otherwise. The plugin is **RTX 5090 / consumer Blackwell (sm_120a) only**
-> (its kernel targets `sm_120a`; it does **not** build/run on H100 sm_90 or B200
-> sm_100). Plain FP8 / NVFP4 (no fp4-attn) engines need none of this.
-
-**The plugin is built through `qlip` itself** — you don't clone or compile it by
-hand. `qlip` ships the source, bootstraps the build prerequisites, and JIT-compiles
-the `.so` on first import (cached afterwards). Prerequisites: CUDA 13 toolkit
-(`nvcc`), `tensorrt-cu12` ≥ 10.15, PyTorch 2.12+cu130 (the `blackwell` install profile). The plugin is
-**self-contained** — its FP4 attention CUDA kernel is compiled into the plugin `.so`
-(vendored build), so it needs **no** separate SageAttention package at build or run
-time. (This only works once the fp4attn-supporting `qlip` update is installed —
-until then the build/import will not produce a loadable plugin.)
-
-```bash
-# 1. Bootstrap build prerequisites (downloads TRT C++ headers + CUTLASS source,
-#    checks nvcc/ninja). Ships with qlip.core.
-qlip-setup-plugins          # or: python -m qlip.plugins setup
-
-# 2. The plugin builds JIT on first import (~30-90s nvcc, cached afterwards). Verify:
-python -c "import torch; from qlip.plugins.fp4attn import ensure_plugin_registered; \
-           ensure_plugin_registered(); print('fp4attn plugin OK')"
-```
-
-If anything is missing, `ensure_plugin_registered()` prints the exact fix. The full
-build reference (env vars, per-plugin requirements, troubleshooting) ships **inside
-the `qlip` package** as `qlip/plugins/BUILD.md` and `qlip/plugins/README.md` —
-`python -c "import qlip, pathlib; print(pathlib.Path(qlip.__file__).parent / 'plugins')"`
-prints their location.
-
-If anything is missing, `ensure_plugin_registered()` prints exactly what to fix and
-points back at `qlip-setup-plugins` (see `qlip/plugins/BUILD.md` /
-`qlip/plugins/README.md` in the qlip package). At inference, ComfyUI's
-`QlipEnginesLoader` calls `ensure_plugin_registered()` automatically — once the
-plugin is built, fp4-attn engines just work.
-
-> SageAttention3 is a **separate, optional** thing — only for the eager-PyTorch
-> attention path (KJNodes `Patch Sage Attention KJ`), not for these compiled
-> engines. The `fp4attn` plugin does not depend on it.
-
-## Precompiled Engines
-
-Precompiled engines are hosted on HuggingFace. The **Qlip Engines Loader** node can download them automatically — just set the `hf_repo` input:
-
-| Model | `hf_repo` value |
-|-------|----------------|
-| FLUX.2 Klein 9B Distilled BF16 + LoRA | `TheStageAI/Elastic-FLUX-2-Klein:models/H100/klein-9b_lora` |
-| FLUX.2 Klein 9B Distilled FP8 + LoRA | `TheStageAI/Elastic-FLUX-2-Klein:models/H100/klein-9b-fp8_lora` |
-| FLUX.2 Klein 9B Base BF16 + LoRA | `TheStageAI/Elastic-FLUX-2-Klein:models/H100/klein-base-9b_lora` |
-| FLUX.2 Klein 9B Base FP8 + LoRA | `TheStageAI/Elastic-FLUX-2-Klein:models/H100/klein-base-9b-fp8_lora` |
-| LTX-2 19B Distilled BF16 + LoRA | `TheStageAI/Elastic-LTX-2:models/H100/ltx-2-19b-distilled_lora` |
-| LTX-2 19B Distilled FP8 + LoRA | `TheStageAI/Elastic-LTX-2:models/H100/ltx-2-19b-distilled-fp8_lora` |
-| Z-Image-Turbo BF16 + LoRA | `TheStageAI/Elastic-Z-Image-Turbo:models/H100/z-image-turbo_lora` |
-| Z-Image-Turbo FP8 + LoRA | `TheStageAI/Elastic-Z-Image-Turbo:models/H100/z-image-turbo-fp8_lora` |
-| LTX-Video 2.3 22B Distilled FP8 + LoRA (t2v) | `TheStageAI/Elastic-LTX-2.3:models/H100/ltx-2.3-22b-distilled-fp8-t2v_lora` |
-| Qwen Image Edit BF16 + LoRA | `TheStageAI/Elastic-Qwen-Image-Edit:models/H100/qwen-image-edit-bf16_lora` |
-| Wan 2.2 I2V High-Noise FP8 + LoRA | `TheStageAI/Elastic-Wan2.2-I2V:models/H100/wan-i2v-high-noise-fp8_lora` |
-| Wan 2.2 I2V Low-Noise FP8 + LoRA | `TheStageAI/Elastic-Wan2.2-I2V:models/H100/wan-i2v-low-noise-fp8_lora` |
-| Wan 2.2 I2V NVFP4 + LoRA — **RTX 5090** (ready now) | `TheStageAI/Elastic-Wan2.2-I2V:models/GeForce-RTX-5090/wan-i2v-low-noise-nvfp4_lora` |
-| Wan 2.2 I2V NVFP4 + FP4-attention + LoRA — **RTX 5090** (needs qlip fp4attn update) | `TheStageAI/Elastic-Wan2.2-I2V:models/GeForce-RTX-5090/wan-i2v-low-noise-nvfp4-fp4attn_lora` |
-| FLUX.2 Klein 9B Edit FP8-dynamic + LoRA — **RTX 5090** | `TheStageAI/Elastic-FLUX-2-Klein:models/GeForce-RTX-5090/klein-9b-fp8-dynamic-edit_lora` |
-| FLUX.2 Klein 9B Edit FP8-static + LoRA — **RTX 5090** | `TheStageAI/Elastic-FLUX-2-Klein:models/GeForce-RTX-5090/klein-9b-fp8-static-edit_lora` |
-| FLUX.2 Klein 9B Edit NVFP4 + LoRA — **RTX 5090** | `TheStageAI/Elastic-FLUX-2-Klein:models/GeForce-RTX-5090/klein-9b-nvfp4-edit_lora` |
-| FLUX.2 Klein 9B Edit NVFP4 + FP4-attention + LoRA — **RTX 5090** (needs qlip fp4attn update) | `TheStageAI/Elastic-FLUX-2-Klein:models/GeForce-RTX-5090/klein-9b-nvfp4-fp4attn-edit_lora` |
-| FLUX.2 Klein 9B Edit NVFP4 + FP4-attention, no LoRA — **RTX 5090** (needs qlip fp4attn update) | `TheStageAI/Elastic-FLUX-2-Klein:models/GeForce-RTX-5090/klein-9b-nvfp4-fp4attn-edit-nolora` |
-| FLUX.2 Klein 9B Edit FP8-dynamic + LoRA — **B200** | `TheStageAI/Elastic-FLUX-2-Klein:models/B200/klein-9b-fp8-dynamic-edit_lora` |
-| FLUX.2 Klein 9B Edit NVFP4 + LoRA — **B200** | `TheStageAI/Elastic-FLUX-2-Klein:models/B200/klein-9b-nvfp4-edit_lora` |
-| Z-Image-Turbo FP8-dynamic + LoRA — **RTX 5090** | `TheStageAI/Elastic-Z-Image-Turbo:models/GeForce-RTX-5090/z-image-turbo-fp8-dynamic_lora` |
-| Z-Image-Turbo NVFP4 + LoRA — **RTX 5090** | `TheStageAI/Elastic-Z-Image-Turbo:models/GeForce-RTX-5090/z-image-turbo-nvfp4_lora` |
-| Z-Image-Turbo NVFP4 + FP4-attention + LoRA — **RTX 5090** (needs qlip fp4attn update) | `TheStageAI/Elastic-Z-Image-Turbo:models/GeForce-RTX-5090/z-image-turbo-nvfp4-fp4attn_lora` |
-| Z-Image-Turbo NVFP4 + FP4-attention, no LoRA — **RTX 5090** (needs qlip fp4attn update) | `TheStageAI/Elastic-Z-Image-Turbo:models/GeForce-RTX-5090/z-image-turbo-nvfp4-fp4attn-nolora` |
-| Z-Image-Turbo FP8-dynamic + LoRA — **B200** | `TheStageAI/Elastic-Z-Image-Turbo:models/B200/z-image-turbo-fp8-dynamic_lora` |
-| Z-Image-Turbo NVFP4 + LoRA — **B200** | `TheStageAI/Elastic-Z-Image-Turbo:models/B200/z-image-turbo-nvfp4_lora` |
-| Krea 2 Turbo FP8 + LoRA — **H200** (TensorRT 10.13, `nvidia` profile) | `TheStageAI/Elastic-Krea-2:models/H200/krea2-fp8_lora_trt_10_13` |
-| Krea 2 Turbo FP8 + LoRA — **H200** (TensorRT 10.15, legacy) | `TheStageAI/Elastic-Krea-2:models/H200/krea2-fp8_lora` |
-
-The format is `org/repo:path/to/engines`. Engines are downloaded once and cached.
-
-> **Wan 2.2 RTX 5090 engines** ship with our low→high LoRA
-> ([`wan2.2-i2v-low-to-high-lora.safetensors`](https://huggingface.co/TheStageAI/Elastic-Wan2.2-I2V/blob/main/models/GeForce-RTX-5090/wan2.2-i2v-low-to-high-lora.safetensors),
-> same folder). The **NVFP4** engine works today; the **NVFP4 + FP4-attention**
-> engine is faster (see the [Wan 2.2 RTX 5090 benchmark](#-wan-22-i2v-14b--rtx-5090))
-> but **won't load until the `fp4attn` plugin ships in a public qlip update**. Use
-> workflow [`workflows/video_wan2_2_14b_i2v_5090-qlip.json`](workflows/video_wan2_2_14b_i2v_5090-qlip.json).
->
-> **Download the low→high LoRA** into ComfyUI's `models/loras/` (the workflow's
-> `QlipLoraStack` expects it there). The Python API needs no CLI and works
-> everywhere:
-> ```bash
-> python -c "
-> from huggingface_hub import hf_hub_download; import shutil
-> p = hf_hub_download('TheStageAI/Elastic-Wan2.2-I2V',
->       'models/GeForce-RTX-5090/wan2.2-i2v-low-to-high-lora.safetensors')
-> shutil.copy(p, '/path/to/ComfyUI/models/loras/wan2.2-i2v-low-to-high-lora.safetensors')
-> print('LoRA installed')"
-> ```
-> The engine itself is fetched automatically by `QlipEnginesLoader` when you set
-> its `hf_repo` to the path above (`…/wan-i2v-low-noise-nvfp4_lora`).
-
-Alternatively, download manually with the `hf` CLI (the old `huggingface-cli` is
-deprecated in `huggingface_hub` ≥ 1.x — use `hf`):
-
-```bash
-# The hf CLI needs `click`, which isn't always pulled in — install it if you see
-# "ModuleNotFoundError: No module named 'click'":
-pip install click
-
-# Example: FLUX.2 Klein 9B FP8 + LoRA
-hf download TheStageAI/Elastic-FLUX-2-Klein \
-    --local-dir ./engines/flux-klein \
-    --include "models/H100/klein-9b-fp8_lora/*"
-```
-
-Then point `engines_path` to the downloaded directory. (No CLI at all: use the
-`hf_hub_download(...)` Python snippet shown above for the Wan LoRA.)
-
-## Pricing
-
-**Pay only for the inference engine, and only for what you use.** Rates below cover
-the **TheStage AI inference software only** — the Qlip Compile engines. In the cloud,
-GPU compute is billed by your provider; on your own hardware, you cover the
-infrastructure.
-
-| GPU | Rate (per hour) |
-|-----|-----------------|
-| B200, RTX 6000 | **$1.00 / hr** |
-| A100, H100, H200 | **$0.50 / hr** |
-| L40s, RTX 4090, RTX 5090 | **$0.20 / hr** |
-
-- **Full access** — the Qlip Compression Stack and ANNA are included in all plans.
-- **Pay per deployment** — you pay only for deployed models (Qlip Compile engines,
-  Elastic Models).
-- **GPU savings** — a fraction of the savings for server GPUs, billed per hour.
-- **Subscriptions** — higher-tier plans include discounted inference rates; Enterprise
-  uses flat fees.
-
-### Plans
-
-Pricing matches how you deploy — plans include GPU hours, inference runtime usage,
-plus ANNA and the optimization toolkit. Need more? Top up credits and keep running
-inference.
-
-| | **Researcher** | **Individual** | **Team** | **Enterprise** |
-|---|---|---|---|---|
-| Price | **$0 / mo** | **$20 / mo** | **$150 / mo** | **Custom** |
-| Best for | research, benchmarks, prototypes | solo builders | teams shipping to production | scale, security & private deployments |
-| GPU quota | 1 | 2 | 8 | Custom |
-| Task runs / day | up to 50 | up to 400 | up to 4,000 | Unlimited |
-| Seats | 1 | 1 | 8 | Unlimited |
-| Credits | $1 starter | $2 / mo | $10 / mo | — |
-| Inference engine + SDK | ✓ | ✓ (15% off*) | ✓ (20% off*) | flat fees* |
-| Extras | — | — | — | custom integrations, SLAs |
-| SOC 2 | ✓ | ✓ | ✓ | ✓ |
-
-<sub>* discounts / flat fees apply to inference engine + SDK usage.</sub>
-
-For on-device pricing and full plan details, see [thestage.ai](https://thestage.ai).
-
-## Nodes
-
-### Qlip Engines Loader
-
-Loads pre-compiled engines and replaces transformer blocks at runtime. Caches engines across runs — first load takes a few seconds, subsequent runs are instant.
-
-| Input | Type | Required | Default | Description |
-|-------|------|----------|---------|-------------|
-| `model` | MODEL | Yes | | Model from any loader (UNETLoader, CheckpointLoaderSimple, etc.) |
-| `engines_path` | STRING | No | `""` | Path to directory with `.qlip`/`.engine` files |
-| `hf_repo` | STRING | No | `""` | HuggingFace repo with engines, e.g. `TheStageAI/Elastic-FLUX-2-Klein:models/H100/klein-9b-fp8_lora` |
-| `lora_stack` | QLIP_LORA_STACK | No | | LoRA stack from `Qlip LoRA Stack` node(s) |
-| `cuda_graph` | BOOLEAN | No | `False` | Enable CUDA Graph capture — reduces kernel launch overhead for faster inference |
-
-LoRA is auto-detected: if `lora_config.json` exists in the engines directory or a `lora_stack` is connected, LoRA support is enabled automatically. No manual toggle needed.
-
-**Output:** `MODEL`
-
-### Qlip LoRA Stack
-
-Builds a chainable list of LoRA entries. Each node adds one LoRA file. Chain multiple nodes via `prev_stack` to stack LoRAs.
-
-| Input | Type | Required | Default | Description |
-|-------|------|----------|---------|-------------|
-| `lora_path` | STRING | Yes | `""` | Path to LoRA `.safetensors` file |
-| `strength` | FLOAT | Yes | `1.0` | Strength multiplier (`-10.0` to `10.0`) |
-| `prev_stack` | QLIP_LORA_STACK | No | | Previous stack to extend |
-
-**Output:** `QLIP_LORA_STACK`
-
-### Qlip LoRA Switch
-
-Enables or disables LoRA at runtime without reloading engines. Use after `Qlip Engines Loader` with LoRA-enabled engines.
-
-| Input | Type | Required | Default | Description |
-|-------|------|----------|---------|-------------|
-| `model` | MODEL | Yes | | Model with loaded engines |
-| `enable` | BOOLEAN | Yes | `True` | Enable or disable LoRA |
-| `lora_stack` | QLIP_LORA_STACK | No | | LoRA stack to load (when enabling) |
-
-**Output:** `MODEL`
-
-### Qlip Auto Sparse
-
-One-knob block-sparse attention on any DiT (image or video). Swaps ComfyUI's
-`optimized_attention` for a router: long self-attention calls go to qlip's
-int8 dynamic block-sparse kernel, everything else (text/cross attention,
-masked calls, short sequences) passes to the original kernel untouched.
-Blocks are picked dynamically every step — no per-model tuning, no fixed
-pattern baked in. Works on eager models and compiled engines alike; toggle
-`enable` off to restore stock attention with no reload. Runs through the
-licensed qlip session (same login as the engines).
-
-| Input | Type | Required | Default | Description |
-|-------|------|----------|---------|-------------|
-| `model` | MODEL | Yes | | Any DiT (LTX, Wan, etc.) |
-| `enable` | BOOLEAN | Yes | `True` | Enable sparse attention |
-| `sparsity` | FLOAT | Yes | `0.5` | Fraction of attention blocks to DROP. 0.5 is safe, 0.7 is the validated fast point with the diversity selector, 0.9 is a draft mode |
-| `selector` | CHOICE | No | `diversity` | How blocks are picked. `diversity` (recommended) = similarity minus redundancy — best quality at equal speed. `topk` = flat top-k by similarity. `meansim` = cdf mass + self-similarity |
-| `simthreshd1` | FLOAT | No | `0.1` | `meansim` only: self-similarity threshold; higher = more sparsity |
-| `smooth_k` | BOOLEAN | No | `True` | Key smoothing (de-mean) — usually improves quality at no cost |
-
-**Output:** `MODEL`
-
-### Qlip Cache
-
-Step caching — skip whole denoising steps by predicting the model's output when
-the trajectory moves slowly. Wraps the UNet call through ComfyUI's official
-wrapper hook, so it runs over any engine (FP8 / NVFP4) and eager models,
-with a **separate cache per CFG branch** (cond/uncond never share a predictor).
-Step mode is best on many-step schedules (base models, 20–50 steps); `block`
-mode (DBCache-style: first/last blocks always compute, middle blocks skipped
-via a cached residual) also helps few-step distilled models.
-
-| Input | Type | Required | Default | Description |
-|-------|------|----------|---------|-------------|
-| `model` | MODEL | Yes | | Diffusion model |
-| `enable` | BOOLEAN | Yes | `True` | Enable caching |
-| `threshold` | FLOAT | Yes | `0.15` | step mode: accumulated-error budget before a forced recompute. block mode: rel-L1 hidden-state diff below which middle blocks are skipped (0.05–0.1 typical). Higher = more skips = faster, riskier |
-| `mode` | CHOICE | Yes | `step` | `step` = skip whole denoising steps. `block` = skip the middle transformer blocks per step |
-| `method` | CHOICE | No | `hermite` | `easycache` (reuse last output), `taylor` (TaylorSeer extrapolation), `hermite` (HiCache — damped extrapolation, steadiest) |
-| `order` | INT | No | `2` | Extrapolation order for taylor/hermite (caches `order` history tensors) |
-| `warmup_steps` | INT | No | `4` | First steps always computed — they set composition; never cache them |
-| `max_consecutive_skips` | INT | No | `3` | Hard cap on skips in a row so error can't compound |
-| `fn_blocks` | INT | No | `8` | block mode: first N blocks that always compute (their output is the skip probe) |
-| `bn_blocks` | INT | No | `0` | block mode: last N blocks that always compute (refinement tail) |
-
-**Output:** `MODEL`
-
-### Qlip Cache Report
-
-Prints how many steps were real vs skipped and the resulting compute ratio /
-ideal speedup. Connect `trigger` to a post-sampler output so it runs after
-generation. No model input needed.
-
-| Input | Type | Required | Default | Description |
-|-------|------|----------|---------|-------------|
-| `trigger` | * | No | | Connect any post-sampler output to order execution |
-
-**Output:** `STRING` (also printed to console).
-
-### Qlip Progressive
-
-Progressive resolution — early denoising steps run on a **downscaled latent**,
-then the trajectory continues at full resolution. Composition forms early and
-survives the upscale; the saved compute scales with resolution (the higher the
-target, the more it pays). Implemented as a model hook over ComfyUI's official
-wrapper — keep your own sampler. The noisy latent is downscaled with nearest
-sampling (noise statistics preserved), clean conditioning bilinearly, and
-nested multimodal latents are handled natively (e.g. MiniMax H3: video is
-downscaled, audio passes through untouched).
-
-| Input | Type | Required | Default | Description |
-|-------|------|----------|---------|-------------|
-| `model` | MODEL | Yes | | Any DiT; this is a model hook, not a sampler |
-| `enable` | BOOLEAN | Yes | `True` | Enable progressive resolution |
-| `low_scale` | FLOAT | Yes | `0.5` | sigma mode only: latent side scale for the low-res phase |
-| `switch_at` | FLOAT | Yes | `0.5` | sigma mode only: fraction of the sigma range spent at low resolution |
-| `switch_mode` | CHOICE | No | `auto` | `auto` = adaptive ladder, no knobs (starts at 0.25 and climbs by itself). `sigma` = fixed single switch at `switch_at` with `low_scale` |
-| `stab_threshold` | FLOAT | No | `0.08` | Reserved; auto mode ignores this |
-
-**Output:** `MODEL`
-
-### Qlip Compile
-
-Managed compilation of the diffusion model — no ONNX export, no engine build.
-Discovers the transformer block stacks, compiles each block class once through
-`torch.compile`, memoizes shape-pure glue (RoPE embedders) and can put every
-large block Linear on the FP8/FP4 path via native scaled GEMM. Vs whole-model
-`torch.compile`: same steady-state speed, but cold start is seconds instead of
-minutes and **resolution changes need no recompile**. Install is lazy — it
-happens on the first model call, so LoRA patches and device placement are
-already settled; a block that fails to compile permanently falls back to eager
-and the run never breaks.
-
-Compose order: `QlipAutoSparse → QlipCompile → QlipCache → QlipProgressive`.
-
-| Input | Type | Required | Default | Description |
-|-------|------|----------|---------|-------------|
-| `model` | MODEL | Yes | | Any DiT; composes with the other Qlip nodes |
-| `enable` | BOOLEAN | Yes | `True` | Enable compilation |
-| `quantize` | CHOICE | Yes | `none` | `fp8` = e4m3 scaled GEMM (H100+). `fp4` = nvfp4, Blackwell sm_100+ only (falls back to fp8 elsewhere) |
-| `backend` | CHOICE | No | `default` | `torch.compile` mode for the blocks; `max-autotune` compiles much longer for ~1% extra |
-| `act_scales` | CHOICE | No | `calibrate-first-run` | fp8 only. First run records amax, then scales freeze static (fastest). `dynamic` = per-call amax forever (~6% slower, no warmup) |
-| `force_resident` | BOOLEAN | No | `True` | Convert weight-streamed (dynamic-VRAM) models to fully resident before compiling — compiled steps must not be PCIe-bound |
-| `weights_policy` | CHOICE | No | `keep` | `release`: after fp8/fp4 quantization free the master weights — big VRAM win, irreversible until checkpoint reload; apply LoRAs first |
-| `quant_config` | QLIP_QUANT | No | | Optional Qlip Quant Config node — overrides `quantize`/`act_scales` |
-
-**Output:** `MODEL`
-
-### Qlip Quant Config
-
-Full quantization control for Qlip Compile (optional — the `quantize` input
-covers the common cases).
-
-| Input | Type | Required | Default | Description |
-|-------|------|----------|---------|-------------|
-| `scheme` | CHOICE | Yes | `fp8_e4m3` | `fp8_e4m3` (H100+) or `nvfp4` (e2m1 + per-16 e4m3 block scales, Blackwell) |
-| `weight_granularity` | CHOICE | Yes | `per-tensor` | `per-channel` = rowwise scaled GEMM: more accurate, slightly slower, no calibration needed |
-| `act_scales` | CHOICE | Yes | `calibrate` | per-tensor only: `calibrate` (freeze static after `calib_runs`) or `dynamic` (per-call amax) |
-| `calib_runs` | INT | Yes | `1` | Sampling runs that feed the observer before scales freeze |
-| `observer` | CHOICE | Yes | `max` | `max` = running maximum (safe), `ema` = exponential moving average (ignores rare spikes) |
-| `ema_decay` | FLOAT | Yes | `0.8` | EMA observer decay |
-| `min_dim` | INT | Yes | `512` | Linears with any side smaller than this stay unquantized |
-| `skip_layers` | STRING | Yes | `""` | Comma-separated name substrings kept in high precision, e.g. `qkv` |
-
-**Output:** `QLIP_QUANT`
-
-### Qlip Timer Start
-
-Records a start timestamp. Place **before** the node(s) you want to measure.
-
-| Input | Type | Required | Default | Description |
-|-------|------|----------|---------|-------------|
-| `passthrough` | * | Yes | | Any data — passed through unchanged |
-| `timer_name` | STRING | Yes | `"timer_1"` | Name for this timer (must match Timer Stop) |
-| `cuda_sync` | BOOLEAN | No | `True` | Call `torch.cuda.synchronize()` for accurate GPU timing |
-
-**Output:** same data as `passthrough`
-
-### Qlip Timer Stop
-
-Records elapsed time since the matching Timer Start and displays it. Place **after** the measured node(s).
-
-| Input | Type | Required | Default | Description |
-|-------|------|----------|---------|-------------|
-| `passthrough` | * | Yes | | Any data — passed through unchanged |
-| `timer_name` | STRING | Yes | `"timer_1"` | Name for this timer (must match Timer Start) |
-| `cuda_sync` | BOOLEAN | No | `True` | Call `torch.cuda.synchronize()` for accurate GPU timing |
-
-**Output:** same data as `passthrough`. Elapsed time is shown in the node UI and printed to console.
-
-### Qlip Timer Report
-
-Displays a summary table of all timer measurements. Connect the `trigger` input to any node output that executes after all Timer Stop nodes.
-
-| Input | Type | Required | Default | Description |
-|-------|------|----------|---------|-------------|
-| `trigger` | * | No | | Connect any output to ensure execution order |
-| `track_cold_start` | BOOLEAN | No | `False` | Show cold start (first run) comparison — displays delta % vs first measurement |
-
-**Output:** none (display only). Results are shown in the node UI and printed to console.
-
-Results auto-reset between workflow runs. Cold start values persist across runs for comparison.
-
-## Workflows
-
-Ready-to-use ComfyUI workflow files are in [`workflows/`](workflows/):
-
-| File | Description | ComfyUI commit |
-|------|-------------|----------------|
-| `flux-klein.json` | FLUX.2 Klein image generation | `048dd2f3` |
-| `video_ltx2_i2v_distilled.json` | LTX-2 19B image-to-video | `048dd2f3` |
-| `z-image-turbo.json` | Z-Image-Turbo image generation | `048dd2f3` |
-| `video_ltx_2_3_t2v-qlip.json` | LTX-Video 2.3 22B text-to-video | `b615af1c` |
-| `qwen-image-edit.json` | Qwen Image Edit | `b615af1c` |
-| `video_wan2_2_14B_i2v-qlip.json` | Wan 2.2 I2V 14B, two experts (H100) | `b615af1c` |
-| `video_wan2_2_14b_i2v_5090-qlip.json` | Wan 2.2 I2V 14B, one expert + low→high LoRA (RTX 5090) | `b615af1c` |
-| `flux_klein_edit.json` | FLUX.2 Klein image edit (RTX 5090 / B200 engines) | `b615af1c` |
-| `z-image-turbo-5090.json` | Z-Image-Turbo (RTX 5090 / B200 engines) | `b615af1c` |
-
-Model download scripts are in [`scripts/`](scripts/):
-
-| Script | Description |
-|--------|-------------|
-| `download_flux_klein_models.sh` | FLUX.2 Klein (diffusion model, text encoder, VAE). Requires HF token |
-| `download_ltx_2_models.sh` | LTX-2 19B (checkpoints, text encoder, LoRAs, upscaler) |
-| `download_z_image_turbo_models.sh` | Z-Image-Turbo (diffusion model, text encoder, VAE, LoRA) |
-| `download_ltx_2_3_models.sh` | LTX-Video 2.3 22B (checkpoint, Gemma text encoder, LoRAs, upscaler) |
-| `download_qwen_image_edit.sh` | Qwen Image Edit (diffusion model, text encoder, LoRA) |
-| `download_wan_i2v_models.sh` | Wan 2.2 I2V 14B (high- and low-noise experts, text encoder, CLIP vision, VAE, lightx2v 4-step LoRAs) |
-
-To download models for a specific workflow:
-
-```bash
-export COMFYUI_PATH=/path/to/ComfyUI
-
-# Original models (ComfyUI 048dd2f3)
-bash custom_nodes/ComfyUI-Qlip/scripts/download_flux_klein_models.sh
-bash custom_nodes/ComfyUI-Qlip/scripts/download_ltx_2_models.sh
-bash custom_nodes/ComfyUI-Qlip/scripts/download_z_image_turbo_models.sh
-
-# New models (ComfyUI b615af1c)
-bash custom_nodes/ComfyUI-Qlip/scripts/download_ltx_2_3_models.sh
-bash custom_nodes/ComfyUI-Qlip/scripts/download_qwen_image_edit.sh
-bash custom_nodes/ComfyUI-Qlip/scripts/download_wan_i2v_models.sh
-```
-
-Scripts skip already-downloaded files, so they are safe to re-run. Override the HuggingFace cache location with `HF_HUB_CACHE` if needed.
-
-### Basic (no LoRA)
+Add **Qlip Engines Loader** to the model line and set `hf_repo` to the engine for your GPU:
 
 ```
-UNETLoader / CheckpointLoaderSimple (model.safetensors)
-  -> Qlip Engines Loader (engines_path=...)
-    -> BasicGuider / CFGGuider
-      -> SamplerCustomAdvanced
-        -> VAEDecode -> SaveImage
+UNETLoader → Qlip Engines Loader (hf_repo = TheStageAI/Elastic-Z-Image-Turbo:models/GeForce-RTX-5090/z-image-turbo-nvfp4_lora) → sampler
 ```
 
-### With LoRA
+The loader downloads the engine once and swaps it in for the model's transformer blocks. Add
+**Qlip LoRA Stack** for LoRAs. All engines: [Supported models and engines](docs/models.md).
+
+<p align="center">
+  <img src="assets/example_image.png" alt="ComfyUI-Qlip in a real workflow" width="700">
+  <br>
+  <em>FLUX.2 Klein 9B with LoRA: Qlip Engines Loader and Qlip LoRA Stack added to an existing
+  workflow. The rest of the graph is unchanged.</em>
+</p>
+
+### 2. Acceleration nodes: any model, no engine needed
+
+Put these on the `MODEL` line, in this order. Each has an `enable` switch.
 
 ```
-Qlip LoRA Stack (lora.safetensors, strength=1.0)  ─────────────────────┐
-                                                                         |
-UNETLoader / CheckpointLoaderSimple (model.safetensors)                  |
-  -> Qlip Engines Loader (engines_path=..., lora_stack=^)
-    -> BasicGuider / CFGGuider
-      -> SamplerCustomAdvanced
-        -> VAEDecode -> SaveImage
+model → QlipAutoSparse → QlipCompile → QlipCache → QlipProgressive → sampler
 ```
 
-LoRA support is auto-detected from `lora_config.json` in the engines directory. No manual toggle needed.
+| Node | Speeds up by | Best for |
+|---|---|---|
+| **QlipCompile** | compiling the blocks in-process, optional FP8 / NVFP4 | any model |
+| **QlipCache** | skipping denoising steps the model would barely change | 20–50-step base models |
+| **QlipProgressive** | running early steps at lower resolution | high-resolution images |
+| **QlipAutoSparse** | skipping attention blocks that matter least | video, long sequences |
 
-### Multi-LoRA stacking
+Combining two of them usually gives the best result. All nodes and their parameters:
+[Nodes](docs/nodes.md). To search combinations automatically, give a coding agent
+[`AGENTS.md`](AGENTS.md): see [QLIP Agent](docs/qlip-agent.md).
 
-```
-Qlip LoRA Stack (style_lora.safetensors, 0.8)
-  -> Qlip LoRA Stack (detail_lora.safetensors, 0.5, prev_stack=^)
-    -> Qlip Engines Loader (engines_path=..., lora_stack=^)
-```
+## Supported models
 
-Multiple LoRAs are stacked — their ranks concatenate. Total rank must fit within `--max-lora-rank` used at compilation time.
+| Model | Type | Engines |
+|---|---|---|
+| FLUX.2 Klein 9B | Image, image edit | H100, RTX 5090, B200 |
+| Z-Image-Turbo 6B | Image | H100, RTX 5090, B200 |
+| Krea 2 Turbo | Image | H200 |
+| Qwen Image Edit 14B | Image edit | H100 |
+| Wan 2.2 I2V 14B | Video (image-to-video) | H100, RTX 5090 |
+| LTX-Video 2 19B | Video + audio (image-to-video) | H100 |
+| LTX-Video 2.3 22B | Video + audio (text-to-video) | H100 |
 
-## LoRA Details
+Other DiT models work with the acceleration nodes. To build engines for a new model or GPU, see
+[Compile your own model](docs/compile-your-own-model.md).
 
-LoRA weights are **runtime inputs** to compiled engines, not baked into weights. The `lora_packed` tensor shape `[num_layers, rank, max_features, 2]` holds A and B matrices. The rank dimension is dynamic, allowing different LoRA files without recompilation.
+## Documentation
 
-**Caching behavior:**
-- Engines loaded once per path, reused across runs
-- LoRA weights hot-swapped in-place when stack changes
-- Same LoRA between runs — weights already loaded, swap skipped
-- LoRA removed — packed tensors zeroed, no engine reload
+| Page | What is in it |
+|---|---|
+| [Installation](docs/installation.md) | ComfyUI commits per model, `install.py`, manual install, FP4-attention plugin |
+| [Supported models and engines](docs/models.md) | Model details, every `hf_repo` value, manual engine download |
+| [Workflows and model downloads](docs/workflows.md) | Ready-to-use workflows, model download scripts, graph patterns |
+| [Nodes](docs/nodes.md) | Choosing an acceleration, every node parameter, LoRA with engines |
+| [Benchmarks](docs/benchmarks.md) | H100 / H200 / RTX 5090 / B200 results and comparisons |
+| [QLIP Agent](docs/qlip-agent.md) | Automatic search for the best speed/quality config |
+| [Compile your own model](docs/compile-your-own-model.md) | Engines for new models, GPUs or resolutions |
+| [Troubleshooting](docs/troubleshooting.md) | Common errors and fixes |
+| [Changelog](docs/changelog.md) | What changed in each release |
 
-**Constraints:**
-- Engines compiled without `--lora` cannot accept LoRA at runtime
-- Engines compiled with `--lora` work both with and without LoRA (auto-detected via `lora_config.json`)
-- LyCORIS / LoKR format is not supported
+## Free credits
 
-## Compiling New Models
-
-You can compile any ComfyUI-compatible model into Qlip engines. This is useful when:
-- You want to accelerate a model not in the precompiled engines list
-- You need engines for a specific GPU (engines are hardware-specific)
-- You want custom resolution ranges or LoRA support
-
-### Using Claude Code (recommended)
-
-The easiest way to add a new model is with [Claude Code](https://claude.ai/claude-code). This repository includes an [agent skill](skills/qlip-model-compiler/SKILL.md) that knows how to write compilation scripts, handle model-specific patches, and run compilation.
-
-**What to provide:**
-
-1. **ComfyUI workflow JSON** — export from ComfyUI. **Important**: expand all subgraphs/groups before exporting so every node is visible in the JSON file
-2. **Path to ComfyUI** installation (so the agent can read model source code)
-3. **Model path** and **LoRA path** (if needed)
-4. **Target GPU** and **target resolutions**
-5. **Server SSH access** (if compiling remotely)
-
-**Example prompt:**
-```
-I want to compile my model with Qlip.
-
-Workflow: /path/to/my_workflow.json
-ComfyUI: /path/to/ComfyUI
-Model: my_model.safetensors (UNETLoader, in models/diffusion_models/)
-LoRA: my_lora.safetensors (in models/loras/)
-Text encoder: my_encoder.safetensors (CLIPLoader)
-VAE: my_vae.safetensors
-Target: H100, 512-1024px, FP8 quantization, LoRA support
-```
-
-Claude will analyze the workflow and model source code, write download/compile/benchmark scripts, run compilation, and add inference support to the nodes if needed.
-
-### Manual Compilation
-
-If you prefer to write scripts manually, see the [compilation skill reference](skills/qlip-model-compiler/SKILL.md) for the full API reference including imports, function signatures, patching patterns, and bash wrapper templates.
-
-## Troubleshooting
-
-| Problem | Solution |
-|---------|----------|
-| Shape mismatch errors | Ensure engines match the model (LoRA-enabled engines need `lora_config.json` in the engines directory) |
-| Slow first run | Normal — engine loading takes a few seconds on first use |
-| Engines don't work after GPU change | Engines are GPU-specific — recompile after changing hardware |
-| FP8 quality looks bad | Try `--unfuse-qkv` and `--skip-first-blocks 1 --skip-last-blocks 1` |
-| LoRA not taking effect | Check that `lora_config.json` exists in engines directory and LoRA rank ≤ max compiled rank |
-| `flash_attn 3 package is not installed` | Install with `pip install flash-attn --no-build-isolation` (optional, Hopper only) |
+New users get **10 free credits** at [app.thestage.ai](https://app.thestage.ai).
 
 ## License
 
