@@ -1,7 +1,7 @@
 # ComfyUI-Qlip
 
 <p align="center">
-  <img src="assets/ComfyUI_Qlip.png" alt="ComfyUI-Qlip: 4 new nodes, 5.6× on Krea 2, 4× on MiniMax H3" width="800">
+  <img src="assets/ComfyUI_Qlip_banner.png" alt="ComfyUI-Qlip" width="800">
 </p>
 
 **Make diffusion models in ComfyUI 2–5× faster. Keep your workflow, keep your image.**
