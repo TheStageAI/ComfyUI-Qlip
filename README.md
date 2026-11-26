@@ -83,6 +83,13 @@ UNETLoader → Qlip Engines Loader (hf_repo = TheStageAI/Elastic-Z-Image-Turbo:m
 The loader downloads the engine once and swaps it in for the model's transformer blocks. Add
 **Qlip LoRA Stack** for LoRAs. All engines: [Supported models and engines](docs/models.md).
 
+> **Krea 2 engines need a LoRA.** They accept LoRA ranks 32–64 only, so they fail without a
+> LoRA, or with a LoRA of rank below 32, with `Invalid input shape: no optimization profile
+> defined for the given input shapes`. To generate without a style, connect a rank-32 LoRA, e.g.
+> the official `krea2_retroanime.safetensors` from
+> [Comfy-Org/Krea-2](https://huggingface.co/Comfy-Org/Krea-2), with `strength` 0: its
+> contribution is zero, and the output is the plain model.
+
 <p align="center">
   <img src="assets/example_image.png" alt="ComfyUI-Qlip in a real workflow" width="700">
   <br>
@@ -133,6 +140,7 @@ Other DiT models work with the acceleration nodes. To build engines for a new mo
 | [Workflows and model downloads](docs/workflows.md) | Ready-to-use workflows, model download scripts, graph patterns |
 | [Nodes](docs/nodes.md) | Choosing an acceleration, every node parameter, LoRA with engines |
 | [Benchmarks](docs/benchmarks.md) | H100 / H200 / RTX 5090 / B200 results and comparisons |
+| [Quality](docs/quality.md) | Engines vs the original model on PartiPrompts and DrawBench |
 | [QLIP Agent](docs/qlip-agent.md) | Automatic search for the best speed/quality config |
 | [Compile your own model](docs/compile-your-own-model.md) | Engines for new models, GPUs or resolutions |
 | [Troubleshooting](docs/troubleshooting.md) | Common errors and fixes |

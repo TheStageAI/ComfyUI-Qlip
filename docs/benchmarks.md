@@ -1,6 +1,7 @@
 # Benchmarks
 
-Measured speedups of Qlip engines vs eager PyTorch and other accelerators.
+Measured speedups of Qlip engines vs eager PyTorch and other accelerators. For image quality of the
+engines against the original model, see [Quality](quality.md).
 
 All numbers are for one image or video, batch 1, **warm run** (second run, engines already
 loaded). The benchmarked engines include runtime LoRA support, which costs about 5–15% compared
